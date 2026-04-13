@@ -13,20 +13,24 @@ function cleanNum(val) {
 
 otoSchema.methods.toAPI = function () {
   const d = this.toObject()
-  // Try common field name variants
+  // Exact field names from /api/oto/keys:
+  // BKS, Đơn vị sử dụng, Pháp nhân đứng tên, Mã tài sản,
+  // BKS_1, NHÃN HIỆU, Số chỗ, Năm sản xuất, Nguyên giá, GTCL,
+  // GHI CHÚ, Nhân sự sử dụng
   return {
     _id:       String(d._id),
-    bienSo:    d['Biển số'] || d['BIỂN SỐ'] || d['bienSo'] || '',
-    phapNhan:  d['Pháp nhân đứng tên'] || d['Pháp nhân'] || '',
-    nhanHieu:  d['Nhãn hiệu'] || d['Loại xe'] || d['nhanHieu'] || '',
-    donViSD:   d['Đơn vị sử dụng'] || d['donViSD'] || '',
-    nhanSu:    d['Tài xế /Tỉnh sử dụng'] || d['Nhân sự'] || '',
+    bienSo:    d['BKS']    || d['BKS_1']  || d['Biển số'] || d['BIỂN SỐ'] || '',
+    maTaiSan:  String(d['Mã tài sản'] || d['Mã TS FA'] || d['Mã TS kế toán'] || ''),
+    phapNhan:  d['Pháp nhân đứng tên'] || '',
+    nhanHieu:  d['NHÃN HIỆU'] || d['Nhãn hiệu'] || '',
+    donViSD:   d['Đơn vị sử dụng'] || '',
+    nhanSu:    d['Nhân sự sử dụng'] || d['Tài xế /Tỉnh sử dụng'] || '',
     mien:      d['Miền'] || '',
     soCho:     parseInt(d['Số chỗ']) || 0,
-    namSX:     parseInt(d['Năm Sản xuất'] || d['Năm SX']) || 0,
-    gtcl:      cleanNum(d['GTCL'] || d['Giá trị']),
-    nguyenGia: cleanNum(d['Nguyên giá'] || d['Giá trị']),
-    maTaiSan:  String(d['Mã TS FA'] || d['Mã TS kế toán'] || ''),
+    namSX:     parseInt(d['Năm sản xuất'] || d['Năm SX']) || 0,
+    nguyenGia: cleanNum(d['Nguyên giá']),
+    gtcl:      cleanNum(d['GTCL']),
+    ghiChu:    d['GHI CHÚ'] || '',
   }
 }
 
