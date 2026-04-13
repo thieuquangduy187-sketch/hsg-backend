@@ -48,10 +48,10 @@ router.get('/', async (req, res) => {
     let oTongGTCL=0
 
     otoDocs.forEach(d => {
-      const mien = d['Miền']                          || 'Khác'
-      const nh   = d['Nhãn hiệu'] || d['Loại xe']    || 'Khác'
-      const dv   = d['Đơn vị sử dụng']               || 'Khác'
-      const gt   = cleanNum(d['GTCL'] || d['Giá trị'])
+      const mien = d['Miền']                                       || 'Khác'
+      const nh   = d['NHÃN HIỆU'] || d['Nhãn hiệu'] || d['Loại xe'] || 'Khác'
+      const dv   = d['Đơn vị sử dụng']                            || 'Khác'
+      const gt   = cleanNum(d['GTCL'])
 
       oByMien[mien]    = (oByMien[mien]    || 0) + 1
       oByNhanHieu[nh]  = (oByNhanHieu[nh]  || 0) + 1
