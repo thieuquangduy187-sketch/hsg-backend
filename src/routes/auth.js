@@ -81,4 +81,38 @@ router.post('/change-password', protect, async (req, res) => {
   }
 })
 
+// ── POST /api/auth/seed — tạo user lần đầu (chỉ dùng 1 lần, xóa sau) ─────────
+// Bảo vệ bằng SEED_SECRET env var
+router.post('/seed', async (req, res) => {
+  try {
+    const { secret } = req.body
+    if (!secret || secret !== process.env.SEED_SECRET) {
+      return res.status(403).json({ error: 'Sai secret key.' })
+    }
+
+    // Kiểm tra đã có user chưa
+    const existing = await User.findOne({ username: 'thieuquangduy' })
+    if (existing) {
+      return res.json({ message: 'User đã tồn tại.', user: existing.toSafe() })
+    }
+
+    // Tạo user mặc định
+    const user = new User({
+      username:    'thieuquangduy',
+      password:    'duy2061997',
+      displayName: 'Thiều Quang Duy',
+      role:        'admin',
+      active:      true,
+    })
+    await user.save()
+
+    res.json({
+      message: 'Tạo user thành công!',
+      user: user.toSafe()
+    })
+  } catch(e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 module.exports = router
