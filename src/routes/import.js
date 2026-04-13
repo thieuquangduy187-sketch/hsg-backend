@@ -87,32 +87,34 @@ router.post('/xe', async (req, res) => {
       })
     }
 
-    // Mode: upsert — thêm mới hoặc cập nhật nếu trùng keyField
+    // Mode: upsert — dùng MongoDB updateOne + upsert:true
     for (const rawRow of rows) {
       try {
         const mapped = mapRow(rawRow)
         const keyVal = mapped[keyField]
 
-        if (!keyVal && keyVal !== 0) {
+        if (keyVal === undefined || keyVal === null || keyVal === '') {
           results.skipped++
           continue
         }
 
-        const filter = { [keyField]: keyVal }
-        // Thử thêm cả dạng number
+        // Thử match cả string lẫn number
         const numVal = parseFloat(String(keyVal).replace(/[^0-9.]/g, ''))
-        if (!isNaN(numVal) && numVal !== keyVal) {
-          filter[keyField] = { $in: [keyVal, numVal, String(numVal)] }
-        }
+        const filter = isNaN(numVal)
+          ? { [keyField]: keyVal }
+          : { [keyField]: { $in: [keyVal, numVal, String(numVal), String(Math.round(numVal))] } }
 
-        const existing = await col.findOne(filter)
-        if (existing) {
-          await col.updateOne({ _id: existing._id }, { $set: mapped })
-          results.updated++
-        } else {
-          await col.insertOne(mapped)
-          results.added++
-        }
+        // Dùng upsert:true — MongoDB tự xử lý insert hoặc update
+        const res2 = await col.updateOne(
+          filter,
+          { $set: mapped },
+          { upsert: true }
+        )
+
+        if (res2.upsertedCount > 0) results.added++
+        else if (res2.modifiedCount > 0) results.updated++
+        else results.skipped++ // matched nhưng không thay đổi gì
+
       } catch(rowErr) {
         results.errors.push({
           row: String(rawRow[keyField] || rawRow['BIỂN SỐ'] || rawRow['Biển số'] || '?').substring(0,20),
