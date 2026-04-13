@@ -89,38 +89,51 @@ router.put('/:maTaiSan', async (req, res) => {
 
 // ── GET /api/xe/images?folder=URL ────────────────────────────────────────────
 // Lấy ảnh từ public Google Drive folder — không cần API key
+// ── GET /api/xe/images?folder=URL — lấy ảnh từ Google Drive folder public ────
+// ── GET /api/xe/images?folder=URL ────────────────────────────────────────────
 router.get('/images', async (req, res) => {
   try {
     const folderUrl = req.query.folder || ''
     if (!folderUrl) return res.json({ urls: [] })
 
-    // Extract folder ID from URL
+    // Extract folder ID
     const m = folderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/)
     if (!m) return res.json({ urls: [] })
     const folderId = m[1]
 
-    // Fetch the public folder page — Google renders file list in HTML
-    const pageRes = await fetch(
-      `https://drive.google.com/drive/folders/${folderId}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HSGBot/1.0)' } }
-    )
-    const html = await pageRes.text()
+    const apiKey = process.env.GOOGLE_API_KEY
+    if (!apiKey) {
+      // No API key: scrape public folder HTML to extract file IDs
+      const html = await fetch(`https://drive.google.com/drive/folders/${folderId}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      }).then(r => r.text())
 
-    // Extract Google Drive file IDs from page source
-    // File IDs are 33-char strings starting with 1 and containing alphanumeric + _-
-    const seen = new Set()
-    const urls = []
-    const regex = /"(1[a-zA-Z0-9_-]{32})"/g
-    let match
-    while ((match = regex.exec(html)) !== null) {
-      const id = match[1]
-      if (!seen.has(id)) {
-        seen.add(id)
-        urls.push(`https://lh3.googleusercontent.com/d/${id}`)
+      // Extract file IDs from HTML (format: /file/d/FILE_ID)
+      const fileIds = []
+      const regex = /\/file\/d\/([a-zA-Z0-9_-]{10,})/g
+      let match
+      while ((match = regex.exec(html)) !== null) {
+        if (!fileIds.includes(match[1])) fileIds.push(match[1])
       }
+
+      const urls = fileIds.map(id => `https://lh3.googleusercontent.com/d/${id}`)
+      return res.json({ urls })
     }
 
-    res.json({ urls: urls.slice(0, 50) })
+    // With API key: use Drive API v3
+    const apiUrl = `https://www.googleapis.com/drive/v3/files` +
+      `?q=%27${folderId}%27+in+parents+and+mimeType+contains+%27image/%27+and+trashed%3Dfalse` +
+      `&fields=files(id%2Cname)&pageSize=50&key=${apiKey}`
+
+    const resp = await fetch(apiUrl)
+    const data = await resp.json()
+
+    if (data.error || !data.files) {
+      return res.json({ urls: [], error: data.error?.message })
+    }
+
+    const urls = data.files.map(f => `https://lh3.googleusercontent.com/d/${f.id}`)
+    res.json({ urls })
   } catch(e) {
     res.status(500).json({ error: e.message, urls: [] })
   }
