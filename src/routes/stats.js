@@ -41,7 +41,7 @@ router.get('/', async (req, res) => {
       tongNguyenGia += ng
       tongGTCL      += gt
       if ((d['Lịch sử tai nạn'] || '').length > 3) coTaiNan++
-      if ((d['Cây điều động'] || '').replace(/^0$/, '').length > 1) daDieuDong++
+      if (String(d['Cây điều động'] || '').replace(/^0$/, '').length > 1) daDieuDong++
     })
 
     // Ô tô con stats
