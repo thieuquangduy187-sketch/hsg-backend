@@ -87,4 +87,43 @@ router.put('/:maTaiSan', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
+// ── GET /api/xe/images?folder=URL ────────────────────────────────────────────
+// Lấy ảnh từ public Google Drive folder — không cần API key
+router.get('/images', async (req, res) => {
+  try {
+    const folderUrl = req.query.folder || ''
+    if (!folderUrl) return res.json({ urls: [] })
+
+    // Extract folder ID from URL
+    const m = folderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/)
+    if (!m) return res.json({ urls: [] })
+    const folderId = m[1]
+
+    // Fetch the public folder page — Google renders file list in HTML
+    const pageRes = await fetch(
+      `https://drive.google.com/drive/folders/${folderId}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HSGBot/1.0)' } }
+    )
+    const html = await pageRes.text()
+
+    // Extract Google Drive file IDs from page source
+    // File IDs are 33-char strings starting with 1 and containing alphanumeric + _-
+    const seen = new Set()
+    const urls = []
+    const regex = /"(1[a-zA-Z0-9_-]{32})"/g
+    let match
+    while ((match = regex.exec(html)) !== null) {
+      const id = match[1]
+      if (!seen.has(id)) {
+        seen.add(id)
+        urls.push(`https://lh3.googleusercontent.com/d/${id}`)
+      }
+    }
+
+    res.json({ urls: urls.slice(0, 50) })
+  } catch(e) {
+    res.status(500).json({ error: e.message, urls: [] })
+  }
+})
+
 module.exports = router
