@@ -46,7 +46,7 @@ xeSchema.methods.toAPI = function () {
     rong:         cleanNum(d['Rộng']),
     cao:          cleanNum(d['Cao']),
     hasTaiNan:    (d['Lịch sử tai nạn'] || '').length > 3 ? 1 : 0,
-    hasDieuDong:  (d['Cây điều động'] || '').replace(/^0$/, '').length > 1 ? 1 : 0,
+    hasDieuDong:  String(d['Cây điều động'] || '').replace(/^0$/, '').length > 1 ? 1 : 0,
   }
 }
 
