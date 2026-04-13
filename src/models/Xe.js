@@ -30,7 +30,7 @@ const xeSchema = new mongoose.Schema({
   'Rộng':                 mongoose.Schema.Types.Mixed,
   'Cao':                  mongoose.Schema.Types.Mixed,
 }, {
-  collection: 'xe',
+  collection: 'xetai',
   strict: false  // allow extra fields
 })
 
