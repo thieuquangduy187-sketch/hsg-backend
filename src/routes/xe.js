@@ -58,6 +58,16 @@ router.get('/all', async (req, res) => {
   }
 })
 
+// DEBUG: xem raw document
+router.get('/raw', async (req, res) => {
+  try {
+    const doc = await Xe.findOne({}).lean()
+    res.json(doc)
+  } catch(e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ── GET /api/xe/:maTaiSan — chi tiết 1 xe ─────────────────────────────────────
 router.get('/:maTaiSan', async (req, res) => {
   try {
