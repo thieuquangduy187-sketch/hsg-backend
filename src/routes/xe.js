@@ -58,16 +58,6 @@ router.get('/all', async (req, res) => {
   }
 })
 
-// DEBUG: xem raw document
-router.get('/raw', async (req, res) => {
-  try {
-    const doc = await Xe.findOne({}).lean()
-    res.json(doc)
-  } catch(e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
 // ── GET /api/xe/:maTaiSan — chi tiết 1 xe ─────────────────────────────────────
 router.get('/:maTaiSan', async (req, res) => {
   try {
@@ -119,6 +109,18 @@ router.put('/:maTaiSan', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// DEBUG: xem tất cả field keys
+router.get('/keys', async (req, res) => {
+  try {
+    const doc = await Xe.findOne({}).lean()
+    const keys = Object.keys(doc).map(k => ({
+      repr: JSON.stringify(k),
+      val: String(doc[k]).substring(0,40)
+    }))
+    res.json(keys)
+  } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
 module.exports = router
