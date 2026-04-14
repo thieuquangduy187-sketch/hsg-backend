@@ -8,6 +8,7 @@ const xeRoutes    = require('./routes/xe')
 const otoRoutes   = require('./routes/oto')
 const statsRoutes = require('./routes/stats')
 const { protect } = require('./middleware/auth')
+const analyzeRoutes = require('./routes/analyze')
 const importRoutes = require('./routes/import')
 
 const app  = express()
@@ -26,6 +27,7 @@ app.use('/api/xe',    protect, xeRoutes)
 app.use('/api/oto',   protect, otoRoutes)
 app.use('/api/stats', protect, statsRoutes)
 app.use('/api/import', protect, importRoutes)
+app.use('/api/analyze', protect, analyzeRoutes)
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
 app.use((err, req, res, next) => {
