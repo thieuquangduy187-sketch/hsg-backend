@@ -73,7 +73,9 @@ Quy tắc phân tích:
 - Nếu xe không di chuyển được / nằm gara: ghi vào batThuong
 - Nếu có ghi chú không chuyên nghiệp: ghi vào batThuong
 - kmHienTai: lấy số KM nếu có trong description, không có thì 0
-- bienSo: chuẩn hóa dạng XX-XXX.XX (thêm dấu chấm nếu thiếu)`
+- bienSo: đọc chính xác biển số theo đúng format biển số Việt Nam (XX/XXX-YYY.YY)
+- Nếu có nhiều biển số: liệt kê tất cả, cách nhau bằng dấu phẩy
+- Nếu biển số trong Description khác với Requisition Lines: ưu tiên lấy theo Requisition Lines`
     })
 
     const response = await client.messages.create({
