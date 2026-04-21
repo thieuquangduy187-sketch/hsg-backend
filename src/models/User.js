@@ -5,10 +5,12 @@ const userSchema = new mongoose.Schema({
   username:  { type: String, required: true, unique: true, trim: true, lowercase: true },
   password:  { type: String, required: true, minlength: 6 },
   displayName: { type: String, required: true },
-  role:      { type: String, enum: ['admin', 'viewer'], default: 'viewer' },
+  role:      { type: String, enum: ['admin', 'viewer', 'xe'], default: 'viewer' },
   active:    { type: Boolean, default: true },
   lastLogin: { type: Date },
   createdAt: { type: Date, default: Date.now },
+  maHienTai: { type: String },  // Mã hiện tại của xe (chỉ dùng cho role 'xe')
+  bienSo:    { type: String },  // Biển số xe
 }, { collection: 'users' })
 
 // Hash password trước khi save
