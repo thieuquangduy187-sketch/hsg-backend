@@ -115,4 +115,60 @@ router.post('/seed', async (req, res) => {
   }
 })
 
+// ── GET /api/auth/seed-xe — Tạo xe users (dùng biển số cho xe trùng mã) ──
+router.get('/seed-xe', async (req, res) => {
+  try {
+    const mongoose = require('mongoose')
+    const User = require('../models/User')
+    const db = mongoose.connection.db
+    const xeDocs = await db.collection('xetai').find({}).toArray()
+
+    // Đếm số lần xuất hiện của mỗi mã để phát hiện trùng
+    const maCount = {}
+    xeDocs.forEach(xe => {
+      const ma = (xe['Mã hiện tại'] || '').trim().toLowerCase()
+      if (ma && ma !== '0') maCount[ma] = (maCount[ma] || 0) + 1
+    })
+
+    let created = 0, skipped = 0, errors = []
+    for (const xe of xeDocs) {
+      const ma     = (xe['Mã hiện tại'] || '').trim()
+      const bienSo = (xe['BIỂN SỐ'] || xe['BIẼNSỐ'] || '').trim()
+
+      // Chọn username: nếu mã trùng hoặc rỗng → dùng biển số
+      const maNorm = ma.toLowerCase()
+      let username
+      if (!ma || ma === '0' || (maCount[maNorm] > 1)) {
+        // Dùng biển số, bỏ dấu chấm và gạch ngang
+        if (!bienSo) { skipped++; continue }
+        username = bienSo.replace(/[.\-\s]/g, '').toLowerCase()
+      } else {
+        username = maNorm
+      }
+
+      const existing = await User.findOne({ username })
+      if (existing) { skipped++; continue }
+
+      try {
+        await new User({
+          username,
+          password:    '123456',
+          displayName: `Xe ${bienSo || ma}`,
+          role:        'xe',
+          active:      true,
+          maHienTai:   ma,
+          bienSo,
+        }).save()
+        created++
+      } catch(e) {
+        if (e.code === 11000) skipped++
+        else errors.push(`${username}: ${e.message}`)
+      }
+    }
+    res.json({ success: true, created, skipped, errors, total: xeDocs.length })
+  } catch(e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 module.exports = router
