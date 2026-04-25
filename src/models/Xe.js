@@ -1,4 +1,4 @@
-const mongoose = require('mongoose')
+\const mongoose = require('mongoose')
 
 const xeSchema = new mongoose.Schema({}, {
   collection: 'xetai',
@@ -43,10 +43,8 @@ xeSchema.methods.toAPI = function () {
     hasTaiNan:    (d['Lịch sử tai nạn'] || '').length > 3 ? 1 : 0,
     hasDieuDong:  String(d['Cây điều động'] || '').replace(/^0$/, '').length > 1 ? 1 : 0,
     loaiHinh: (() => {
-      const ma = String(d['Mã hiện tại'] || '')
-      if (!ma) return 'Cửa hàng'
-      const isTK = /TK/i.test(ma) && !/^TK04$/i.test(ma)
-      return isTK ? 'Tổng kho' : 'Cửa hàng'
+      const ch = String(d['Cửa hàng sử dụng'] || d['Cưả hàng sử dụng'] || '')
+      return /^TK/i.test(ch.trim()) ? 'Tổng kho' : 'Cửa hàng'
     })(),
   }
 }
