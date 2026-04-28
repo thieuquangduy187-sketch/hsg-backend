@@ -154,14 +154,14 @@ router.put('/:maTaiSan', async (req, res) => {
       const entry = `${dd}/${mm}/${yyyy}: ${body.oldValue} → ${body.value}`
 
       // Lấy cayDieuDong hiện tại của xe
-      const xe = await Xe.findOne(query, { cayDieuDong: 1 }).lean()
-      const existing = xe?.cayDieuDong ? String(xe.cayDieuDong).trim() : ''
-      setObj['cayDieuDong'] = existing ? `${existing} // ${entry}` : entry
+      const xe = await Xe.findOne(query, { 'Cây điều động': 1 }).lean()
+      const existing = xe?.['Cây điều động'] ? String(xe['Cây điều động']).trim() : ''
+      setObj['Cây điều động'] = existing ? `${existing} // ${entry}` : entry
     }
 
     const result = await Xe.updateOne(query, { $set: setObj })
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Không tìm thấy xe' })
-    res.json({ success: true, cayDieuDong: setObj['cayDieuDong'] || null })
+    res.json({ success: true, cayDieuDong: setObj['Cây điều động'] || null })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
