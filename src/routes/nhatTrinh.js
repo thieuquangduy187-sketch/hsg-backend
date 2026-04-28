@@ -1,3 +1,6 @@
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 📁 BACKEND — hsg-backend/src/routes/nhatTrinh.js
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const router    = require('express').Router()
 const mongoose  = require('mongoose')
 const Xe        = require('../models/Xe')
@@ -23,7 +26,7 @@ const ntSchema = new mongoose.Schema({
   updatedAt:  { type: Date },
   updatedBy:  { type: String },
 }, { collection: 'ntxt' })
-ntSchema.index({ maHienTai: 1, thang: 1, nam: 1 }, { unique: true })
+ntSchema.index({ bienSo: 1, thang: 1, nam: 1 }, { unique: true })
 const NhatTrinh = mongoose.models.NhatTrinh || mongoose.model('NhatTrinh', ntSchema)
 
 // ── POST /api/nhat-trinh ──────────────────────────────────────────────────────
@@ -68,8 +71,8 @@ router.post('/', async (req, res) => {
     if (klNB > tongKL && tongKL > 0)  errs.push('Khối lượng nội bộ không thể lớn hơn tổng khối lượng chuyên chở.')
     if (errs.length) return res.status(400).json({ errors: errs })
 
-    const exists = await NhatTrinh.findOne({ maHienTai: user.username, thang, nam })
-    if (exists) return res.status(409).json({ error: `Đã nộp nhật trình tháng ${thang}/${nam}.` })
+    const exists = await NhatTrinh.findOne({ bienSo, thang, nam })
+    if (exists) return res.status(409).json({ error: `Xe ${bienSo} đã nộp nhật trình tháng ${thang}/${nam}.` })
 
     await new NhatTrinh({
       bienSo, maHienTai: user.username, thang, nam,
