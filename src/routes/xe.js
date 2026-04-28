@@ -1,3 +1,6 @@
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 📁 BACKEND — hsg-backend/src/routes/xe.js
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const router = require('express').Router()
 const Xe = require('../models/Xe')
 
@@ -138,12 +141,27 @@ router.put('/:maTaiSan', async (req, res) => {
     }
     const dbField = fieldMap[body.field]
     if (!dbField) return res.status(400).json({ error: 'Invalid field: ' + body.field })
-    const result = await Xe.updateOne(
-      { $or: [{ 'Mã TS kế toán': id }, { 'Mã TS kế toán': parseInt(id) }] },
-      { $set: { [dbField]: body.value } }
-    )
+
+    const query = { $or: [{ 'Mã TS kế toán': id }, { 'Mã TS kế toán': parseInt(id) }] }
+    const setObj = { [dbField]: body.value }
+
+    // ── Khi thay đổi cửa hàng → ghi nhận vào cây điều động ──────────────────
+    if (body.field === 'cuaHang' && body.oldValue && body.oldValue !== body.value) {
+      const now  = new Date()
+      const dd   = String(now.getDate()).padStart(2, '0')
+      const mm   = String(now.getMonth() + 1).padStart(2, '0')
+      const yyyy = now.getFullYear()
+      const entry = `${dd}/${mm}/${yyyy}: ${body.oldValue} → ${body.value}`
+
+      // Lấy cayDieuDong hiện tại của xe
+      const xe = await Xe.findOne(query, { cayDieuDong: 1 }).lean()
+      const existing = xe?.cayDieuDong ? String(xe.cayDieuDong).trim() : ''
+      setObj['cayDieuDong'] = existing ? `${existing} // ${entry}` : entry
+    }
+
+    const result = await Xe.updateOne(query, { $set: setObj })
     if (result.matchedCount === 0) return res.status(404).json({ error: 'Không tìm thấy xe' })
-    res.json({ success: true })
+    res.json({ success: true, cayDieuDong: setObj['cayDieuDong'] || null })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
