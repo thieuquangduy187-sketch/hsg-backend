@@ -149,8 +149,9 @@ router.post('/sync', async (req, res) => {
     const statusCol = mongoose.connection.db.collection('gps_status')
     const statusOps = vehicles.map(v => {
       const plateRaw = v.vehiclePlate || v.plate || ''
-      // camCount nằm trong serverServiceInfo.camcount
-      const camCount = v.serverServiceInfo?.camcount ?? v.camCount ?? 0
+      // camCount nằm trong packageBAP.serverServiceInfo.camcount
+      // cameras nằm trong cameraDevice.cameras
+      const camCount = v.packageBAP?.serverServiceInfo?.camcount ?? v.serverServiceInfo?.camcount ?? v.camCount ?? 0
       return {
         updateOne: {
           filter: { plateRaw },
@@ -161,7 +162,7 @@ router.post('/sync', async (req, res) => {
             totalKm:     parseFloat(v.totalKm || 0),
             gpsTime:     v.gpsTime   || null,
             camCount,
-            cameras:     v.cameras   || [],
+            cameras:     v.cameraDevice?.cameras || v.cameras || [],
             speed:       v.speed     || 0,
             lat:         v.lat       || null,
             lng:         v.lng       || null,
@@ -345,6 +346,31 @@ router.get('/backfill-status', async (req, res) => {
     const kmCount = await mongoose.connection.db.collection('gps_km_history')
       .countDocuments()
     res.json({ lastBackfill: cfg?.value || null, done: cfg?.done, errors: cfg?.errors, kmRecords: kmCount })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+
+// ── GET /api/gps/debug-raw — xem raw response 1 xe từ Binhanh
+router.get('/debug-raw', async (req, res) => {
+  try {
+    const token = await getToken()
+    if (!token) return res.status(400).json({ error: 'Chưa có token' })
+    const data = await binahCall('/vehicleonline/list', {
+      filterCondition: 5, hasPermissionAsAdmin: false,
+      skipVehiclePlateChanged: false, languageId: 1
+    }, token)
+    const vehicles = Array.isArray(data) ? data : (data?.data || data?.vehicles || [])
+    // Trả về 2 xe đầu để xem structure
+    const sample = vehicles.slice(0, 2).map(v => ({
+      plateRaw:          v.vehiclePlate || v.plate,
+      // Top-level fields
+      camCount_top:      v.camCount,
+      cameras_top:       v.cameras,
+      serverServiceInfo: v.serverServiceInfo,
+      // Tất cả keys của xe
+      allKeys:           Object.keys(v),
+    }))
+    res.json({ total: vehicles.length, sample })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
