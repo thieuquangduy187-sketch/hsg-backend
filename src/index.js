@@ -13,6 +13,8 @@ const nhatTrinhNgayRoutes = require('./routes/nhatTrinhNgay')
 const giaDauRoutes      = require('./routes/giaDau')
 const xeHoatDongRoutes = require('./routes/xeHoatDong')
 const analyzeRoutes = require('./routes/analyze')
+const gpsSyncRoutes = require('./routes/gpsSync')
+const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
 
 const app  = express()
@@ -37,6 +39,7 @@ app.use('/api/xe-hoat-dong', protect, xeHoatDongRoutes)
 app.use('/api/gia-dau', protect, giaDauRoutes)
 app.use('/api/import', protect, importRoutes)
 app.use('/api/analyze', protect, analyzeRoutes)
+app.use('/api/gps',     protect, gpsSyncRoutes)
 
 // Temporary debug route - no auth needed
 app.get('/debug/xe/:bienSo', async (req, res) => {
@@ -65,6 +68,9 @@ app.use((err, req, res, next) => {
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✓ MongoDB connected')
-    app.listen(PORT, () => console.log(`✓ Server on port ${PORT}`))
+    app.listen(PORT, () => {
+      console.log(`✓ Server on port ${PORT}`)
+      startGpsCron()
+    })
   })
   .catch(err => { console.error('✗ DB failed:', err.message); process.exit(1) })
