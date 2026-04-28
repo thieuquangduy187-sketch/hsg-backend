@@ -158,8 +158,13 @@ router.get('/status', async (req, res) => {
       cfgCol.findOne({ key: 'last_sync' })
     ])
 
-    // Cảnh báo xe không hoạt động: totalKm = 0 và isOnline = false
-    const inactive = vehicles.filter(v => !v.isOnline && (v.totalKm === 0 || v.totalKm === null))
+    // Xe inactive = mất tín hiệu > 24h (không phụ thuộc km)
+    const now24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const inactive = vehicles.filter(v => {
+      if (v.isOnline) return false
+      if (!v.lastSeen) return true // không có tín hiệu lần nào
+      return new Date(v.lastSeen) < now24h
+    })
 
     res.json({
       vehicles,
