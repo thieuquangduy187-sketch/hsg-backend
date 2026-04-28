@@ -415,7 +415,7 @@ router.post('/sync-drive-images', async (req, res) => {
         bulkOps.push({
           updateOne: {
             filter: { _id: xeId },
-            update: { $set: { hinhAnh: folderUrl } }
+            update: { $set: { 'Hình ảnh': folderUrl } }
           }
         })
         matched++
