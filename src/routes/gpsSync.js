@@ -5,9 +5,8 @@ const router   = require('express').Router()
 const mongoose = require('mongoose')
 
 const BINHANH_BASE = 'https://gps3.binhanh.vn/api/v1'
-const COMPANY_ID   = 46140
 
-// ── Helper: lấy token từ DB ───────────────────────────────
+// ── Helper: lấy token ─────────────────────────────────────
 async function getToken() {
   const col = mongoose.connection.db.collection('gps_config')
   const cfg = await col.findOne({ key: 'binhanh_token' })
@@ -32,16 +31,68 @@ async function binahCall(path, body, token) {
   return res.json()
 }
 
-// ── Normalize biển số: "61H07623_C" → "61H-076.23" ────────
-function normalizePlate(plate) {
-  if (!plate) return ''
-  // Binhanh dùng format "61H07623_C", HSG dùng "61H-076.23"
-  // Bỏ hậu tố _C/_B, giữ phần chính
-  const s = plate.replace(/_[A-Z]$/, '').toUpperCase()
-  return s
+// ── Helper: tính GPS status dựa trên daysSince + km history
+// kmHistory: Map { plateRaw → [{ date, km }] }
+function calcGpsStatus(vehicle, kmHistory) {
+  const gpsTime = vehicle.gpsTime // "2026-04-28T19:57:39"
+  if (!gpsTime) return { code: 'no_signal', label: 'Không có tín hiệu', color: '#8E8E93' }
+
+  const gpsDate  = new Date(gpsTime.split('T')[0]) // lấy phần date
+  const today    = new Date(new Date().toISOString().split('T')[0])
+  const daysSince = Math.floor((today - gpsDate) / (1000 * 60 * 60 * 24))
+
+  // Lấy km history của xe này
+  const history = kmHistory.get(vehicle.plateRaw) || []
+
+  // Tính tổng km trong N ngày trước gpsDate
+  const sumKm = (daysBack) => {
+    const from = new Date(gpsDate)
+    from.setDate(from.getDate() - daysBack)
+    const fromStr = from.toISOString().split('T')[0]
+    const toStr   = gpsDate.toISOString().split('T')[0]
+    return history
+      .filter(r => r.date >= fromStr && r.date <= toStr)
+      .reduce((acc, r) => acc + (r.km || 0), 0)
+  }
+
+  // Case 2.1: mất 3–4 ngày VÀ km 15 ngày > 600
+  if (daysSince >= 3 && daysSince <= 4) {
+    const km15 = sumKm(15)
+    if (km15 > 600) return { code: 'gps_lost_active', label: 'Mất tín hiệu GPS (xe vẫn HĐ)', color: '#FF9500', daysSince, km15 }
+  }
+
+  // Case 2.2: mất > 4 ngày VÀ km 15 ngày < 50
+  if (daysSince > 4) {
+    const km15 = sumKm(15)
+    if (km15 < 50) return { code: 'stopped', label: 'Xe dừng hoạt động', color: '#FF3B30', daysSince, km15 }
+  }
+
+  // Case 2.3: mất < 2 ngày VÀ km 30 ngày < 50
+  if (daysSince < 2) {
+    const km30 = sumKm(30)
+    if (km30 < 50) return { code: 'stopped', label: 'Xe dừng hoạt động', color: '#FF3B30', daysSince, km30 }
+  }
+
+  return { code: 'normal', label: 'Bình thường', color: '#34C759', daysSince }
 }
 
-// ── POST /api/gps/set-token — Admin lưu JWT token ─────────
+// ── Helper: tính camera status từ cameras array + camCount
+function calcCamStatus(vehicle) {
+  const camCount = vehicle.camCount || 0
+  const cameras  = vehicle.cameras  || []
+
+  if (camCount === 0 || cameras.length === 0)
+    return { code: 'no_cam', label: 'Không có cam', color: '#8E8E93', active: 0, total: 0 }
+
+  const active  = cameras.filter(c => c.record === true).length
+  const lost    = camCount - active
+
+  if (lost === 0) return { code: 'ok',      label: `${active}/${camCount} cam OK`,        color: '#34C759', active, total: camCount }
+  if (active === 0) return { code: 'lost_all', label: `Mất hết ${camCount} cam`,            color: '#FF3B30', active, total: camCount }
+  return            { code: 'partial',  label: `Mất ${lost}/${camCount} cam`,          color: '#FF9500', active, total: camCount }
+}
+
+// ── POST /api/gps/set-token ────────────────────────────────
 router.post('/set-token', async (req, res) => {
   try {
     const { token } = req.body
@@ -56,90 +107,81 @@ router.post('/set-token', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
-// ── POST /api/gps/sync — Sync toàn bộ xe từ Binhanh ───────
+// ── POST /api/gps/sync ────────────────────────────────────
 router.post('/sync', async (req, res) => {
   try {
     const token = await getToken()
     if (!token) return res.status(400).json({ error: 'Chưa có token. Vào Cài đặt GPS để thêm token.' })
 
-    // 1. Lấy danh sách xe online từ Binhanh
+    // 1. Gọi Binhanh lấy toàn bộ xe
     const data = await binahCall('/vehicleonline/list', {
-      filterCondition:        5,
-      hasPermissionAsAdmin:   false,
+      filterCondition:         5,
+      hasPermissionAsAdmin:    false,
       skipVehiclePlateChanged: false,
-      languageId:             1
+      languageId:              1
     }, token)
 
-    // data có thể là array hoặc { data: [...] }
     const vehicles = Array.isArray(data) ? data : (data?.data || data?.vehicles || [])
     if (!vehicles.length) return res.json({ success: true, synced: 0, message: 'Không có dữ liệu xe' })
 
-    // 2. Batch upsert vào collection gps_status
-    const col    = mongoose.connection.db.collection('gps_status')
-    const now    = new Date()
-    const today  = now.toISOString().split('T')[0]
+    const now   = new Date()
+    const today = now.toISOString().split('T')[0]
 
-    const bulkOps = vehicles.map(v => {
-      const plateRaw  = v.vehiclePlate || v.plate || ''
-      const plateNorm = normalizePlate(plateRaw)
-      const isOnline  = v.isOnline ?? v.online ?? false
-      const totalKm   = parseFloat(v.totalKm || v.totalKmToday || 0)
-      const lastSeen  = v.vTime || v.lastTime || null
-      const vehicleId = v.vehicleId || v.id || null
-
-      return {
+    // 2. Lưu km theo ngày vào gps_km_history (dùng cho GPS status logic sau này)
+    const kmCol  = mongoose.connection.db.collection('gps_km_history')
+    const kmOps  = vehicles
+      .filter(v => (v.vehiclePlate || v.plate))
+      .map(v => ({
         updateOne: {
-          filter: { plateRaw },
-          update: {
-            $set: {
-              plateRaw,
-              plateNorm,
-              vehicleId,
-              isOnline,
-              totalKm,
-              lastSeen,
-              syncedAt: now,
-              syncDate: today,
-              lat: v.lat || null,
-              lng: v.lng || null,
-              speed: v.speed || 0,
-              isEnableAcc: v.isEnableAcc ?? null,
-              stopTime: v.stopTime || 0,
-            }
-          },
+          filter: { plateRaw: v.vehiclePlate || v.plate, date: today },
+          update: { $set: {
+            plateRaw: v.vehiclePlate || v.plate,
+            date:     today,
+            totalKm:  parseFloat(v.totalKm || 0),
+            recordedAt: now
+          }},
           upsert: true
         }
-      }
-    })
+      }))
+    if (kmOps.length) await kmCol.bulkWrite(kmOps)
 
-    await col.bulkWrite(bulkOps)
-
-    // 3. Lưu lịch sử km theo ngày (để phát hiện xe không hoạt động)
-    const kmCol = mongoose.connection.db.collection('gps_km_history')
-    const kmOps = vehicles.map(v => {
+    // 3. Lưu snapshot xe vào gps_status
+    const statusCol = mongoose.connection.db.collection('gps_status')
+    const statusOps = vehicles.map(v => {
       const plateRaw = v.vehiclePlate || v.plate || ''
       return {
         updateOne: {
-          filter: { plateRaw, date: today },
-          update: { $set: { plateRaw, date: today, totalKm: parseFloat(v.totalKm || 0), recordedAt: now } },
+          filter: { plateRaw },
+          update: { $set: {
+            plateRaw,
+            vehicleId:   v.vehicleId || v.id || null,
+            isOnline:    v.isOnline  ?? v.online ?? false,
+            totalKm:     parseFloat(v.totalKm || 0),
+            gpsTime:     v.gpsTime   || null,   // "2026-04-28T19:57:39"
+            camCount:    v.camCount  || 0,
+            cameras:     v.cameras   || [],     // array { channel, record, state... }
+            speed:       v.speed     || 0,
+            lat:         v.lat       || null,
+            lng:         v.lng       || null,
+            syncedAt:    now,
+            syncDate:    today,
+          }},
           upsert: true
         }
       }
     })
-    await kmCol.bulkWrite(kmOps)
+    await statusCol.bulkWrite(statusOps)
 
     // 4. Thống kê
     const online  = vehicles.filter(v => v.isOnline ?? v.online).length
     const offline = vehicles.length - online
-
-    // Lưu lastSync
     await mongoose.connection.db.collection('gps_config').updateOne(
       { key: 'last_sync' },
       { $set: { key: 'last_sync', value: now.toISOString(), total: vehicles.length, online, offline } },
       { upsert: true }
     )
 
-    res.json({ success: true, total: vehicles.length, online, offline, synced: bulkOps.length })
+    res.json({ success: true, total: vehicles.length, online, offline, synced: statusOps.length })
   } catch(e) {
     if (e.message === 'TOKEN_EXPIRED')
       return res.status(401).json({ error: 'Token hết hạn. Vui lòng cập nhật token mới.' })
@@ -147,104 +189,50 @@ router.post('/sync', async (req, res) => {
   }
 })
 
-// ── GET /api/gps/status — Trả status tất cả xe cho frontend
+// ── GET /api/gps/status ───────────────────────────────────
 router.get('/status', async (req, res) => {
   try {
-    const col    = mongoose.connection.db.collection('gps_status')
-    const cfgCol = mongoose.connection.db.collection('gps_config')
+    const statusCol = mongoose.connection.db.collection('gps_status')
+    const kmCol     = mongoose.connection.db.collection('gps_km_history')
+    const cfgCol    = mongoose.connection.db.collection('gps_config')
 
-    const [vehicles, lastSync] = await Promise.all([
-      col.find({}).toArray(),
+    // Lấy km history 30 ngày gần nhất (dùng cho GPS status logic)
+    const since30 = new Date()
+    since30.setDate(since30.getDate() - 30)
+    const since30Str = since30.toISOString().split('T')[0]
+
+    const [vehicles, kmDocs, lastSync] = await Promise.all([
+      statusCol.find({}).toArray(),
+      kmCol.find({ date: { $gte: since30Str } }).toArray(),
       cfgCol.findOne({ key: 'last_sync' })
     ])
 
-    // Xe inactive = mất tín hiệu > 24h (không phụ thuộc km)
-    const now24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
-    const inactive = vehicles.filter(v => {
-      if (v.isOnline) return false
-      if (!v.lastSeen) return true // không có tín hiệu lần nào
-      return new Date(v.lastSeen) < now24h
-    })
-
-    res.json({
-      vehicles,
-      lastSync:    lastSync?.value || null,
-      summary: {
-        total:    vehicles.length,
-        online:   vehicles.filter(v => v.isOnline).length,
-        offline:  vehicles.filter(v => !v.isOnline).length,
-        inactive: inactive.length
-      }
-    })
-  } catch(e) { res.status(500).json({ error: e.message }) }
-})
-
-// ── GET /api/gps/camera/:vehicleId — Camera status 1 xe ───
-router.get('/camera/:vehicleId', async (req, res) => {
-  try {
-    const token = await getToken()
-    if (!token) return res.status(400).json({ error: 'Chưa có token' })
-
-    const { vehicleId } = req.params
-    const { plate } = req.query
-
-    const today = new Date().toISOString().split('T')[0]
-
-    const data = await binahCall('/image', {
-      companyId:    COMPANY_ID,
-      vehicleId:    parseInt(vehicleId),
-      vehiclePlate: plate || '',
-      channels:     [],
-      startTime:    `${today}T00:00:00`,
-      endTime:      `${today}T23:59:59`,
-      sortTimeAsc:  false,
-      languageId:   1,
-    }, token)
-
-    // Parse trạng thái camera từ response
-    const images   = Array.isArray(data) ? data : (data?.data || [])
-    const hasSignal = images.length > 0
-    const channels  = [...new Set(images.map(i => i.channel || i.channelId).filter(Boolean))]
-
-    res.json({ hasSignal, imageCount: images.length, channels, lastImage: images[0] || null })
-  } catch(e) {
-    if (e.message === 'TOKEN_EXPIRED') return res.status(401).json({ error: 'Token hết hạn' })
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// ── GET /api/gps/inactive — Xe nghi ngờ không hoạt động ──
-router.get('/inactive', async (req, res) => {
-  try {
-    const kmCol  = mongoose.connection.db.collection('gps_km_history')
-    const days   = parseInt(req.query.days || 3)
-
-    // Lấy lịch sử km 7 ngày gần nhất
-    const since = new Date()
-    since.setDate(since.getDate() - 7)
-    const sinceStr = since.toISOString().split('T')[0]
-
-    const history = await kmCol.find({ date: { $gte: sinceStr } }).toArray()
-
-    // Group theo xe
-    const byPlate = {}
-    for (const r of history) {
-      if (!byPlate[r.plateRaw]) byPlate[r.plateRaw] = []
-      byPlate[r.plateRaw].push({ date: r.date, km: r.totalKm })
+    // Build km history Map: { plateRaw → [{ date, km }] }
+    const kmHistory = new Map()
+    for (const r of kmDocs) {
+      if (!kmHistory.has(r.plateRaw)) kmHistory.set(r.plateRaw, [])
+      kmHistory.get(r.plateRaw).push({ date: r.date, km: r.totalKm })
     }
 
-    // Tìm xe có km = 0 liên tiếp >= days ngày
-    const inactive = []
-    for (const [plate, records] of Object.entries(byPlate)) {
-      const sorted = records.sort((a,b) => b.date.localeCompare(a.date))
-      const zeroStreak = sorted.findIndex(r => r.km > 0)
-      const streak = zeroStreak === -1 ? sorted.length : zeroStreak
-      if (streak >= days) {
-        inactive.push({ plate, streak, records: sorted.slice(0, 7) })
-      }
+    // Tính GPS status + Camera status cho từng xe
+    const enriched = vehicles.map(v => {
+      const gpsStatus = calcGpsStatus(v, kmHistory)
+      const camStatus = calcCamStatus(v)
+      return { ...v, gpsStatus, camStatus }
+    })
+
+    // Summary
+    const summary = {
+      total:       enriched.length,
+      online:      enriched.filter(v => v.isOnline).length,
+      offline:     enriched.filter(v => !v.isOnline).length,
+      gpsLost:     enriched.filter(v => v.gpsStatus.code === 'gps_lost_active').length,
+      stopped:     enriched.filter(v => v.gpsStatus.code === 'stopped').length,
+      camPartial:  enriched.filter(v => v.camStatus.code === 'partial').length,
+      camLostAll:  enriched.filter(v => v.camStatus.code === 'lost_all').length,
     }
 
-    res.json({ inactive, days, total: inactive.length })
+    res.json({ vehicles: enriched, lastSync: lastSync?.value || null, summary })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
