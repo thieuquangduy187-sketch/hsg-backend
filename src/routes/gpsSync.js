@@ -236,4 +236,114 @@ router.get('/status', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
+
+// ── POST /api/gps/backfill-history ───────────────────────
+// Lấy km từng ngày 30 ngày qua cho tất cả xe (chạy 1 lần khi setup)
+router.post('/backfill-history', async (req, res) => {
+  try {
+    const token = await getToken()
+    if (!token) return res.status(400).json({ error: 'Chưa có token' })
+
+    const statusCol = mongoose.connection.db.collection('gps_status')
+    const kmCol     = mongoose.connection.db.collection('gps_km_history')
+
+    // Lấy danh sách xe có vehicleId
+    const vehicles = await statusCol.find({ vehicleId: { $ne: null } }, {
+      projection: { vehicleId: 1, plateRaw: 1 }
+    }).toArray()
+
+    if (!vehicles.length) return res.status(400).json({ error: 'Chưa có dữ liệu xe. Hãy Sync trước.' })
+
+    // Date range: 30 ngày trước → hôm nay
+    const toDate   = new Date()
+    const fromDate = new Date()
+    fromDate.setDate(fromDate.getDate() - 30)
+    const fromStr = fromDate.toISOString().split('T')[0] + 'T00:00:00'
+    const toStr   = toDate.toISOString().split('T')[0]   + 'T23:59:59'
+
+    // Trả về ngay, chạy backfill nền
+    res.json({ success: true, message: `Bắt đầu backfill ${vehicles.length} xe. Mất ~${Math.ceil(vehicles.length * 0.3 / 60)} phút.`, total: vehicles.length })
+
+    // Chạy nền — không block response
+    ;(async () => {
+      let done = 0, errors = 0
+      const BATCH = 5 // xử lý 5 xe cùng lúc
+
+      for (let i = 0; i < vehicles.length; i += BATCH) {
+        const batch = vehicles.slice(i, i + BATCH)
+        await Promise.all(batch.map(async (v) => {
+          try {
+            const data = await binahCall(
+              '/temperature-report/temperature/chart',
+              {
+                vehicleId:  v.vehicleId,
+                fromDate:   fromStr,
+                toDate:     toStr,
+                numberRow:  2000,
+                getAddress: false,
+              },
+              token
+            )
+
+            // Response: { data: [...points] } hoặc array trực tiếp
+            const points = Array.isArray(data) ? data
+              : (data?.data || data?.result || [])
+
+            if (!points.length) { done++; return }
+
+            // Group points theo ngày → km/ngày = max(km) - min(km)
+            const byDay = {}
+            for (const p of points) {
+              if (!p.dateTime || p.km == null) continue
+              const day = p.dateTime.split('T')[0] // "2026-04-28"
+              if (!byDay[day]) byDay[day] = []
+              byDay[day].push(parseFloat(p.km || 0))
+            }
+
+            // Upsert từng ngày vào gps_km_history
+            const ops = Object.entries(byDay).map(([date, kms]) => {
+              const kmDay = Math.max(...kms) - Math.min(...kms)
+              return {
+                updateOne: {
+                  filter: { plateRaw: v.plateRaw, date },
+                  update: { $set: { plateRaw: v.plateRaw, date, totalKm: Math.max(0, parseFloat(kmDay.toFixed(2))), source: 'backfill' } },
+                  upsert: true
+                }
+              }
+            })
+            if (ops.length) await kmCol.bulkWrite(ops)
+            done++
+          } catch(e) {
+            console.error(`[Backfill] ${v.plateRaw}: ${e.message}`)
+            errors++
+          }
+        }))
+
+        // Delay 300ms giữa các batch để tránh rate limit
+        await new Promise(r => setTimeout(r, 300))
+      }
+      console.log(`[Backfill] Xong: ${done} xe thành công, ${errors} lỗi`)
+
+      // Lưu trạng thái backfill
+      await mongoose.connection.db.collection('gps_config').updateOne(
+        { key: 'last_backfill' },
+        { $set: { key: 'last_backfill', value: new Date().toISOString(), done, errors } },
+        { upsert: true }
+      )
+    })()
+
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── GET /api/gps/backfill-status — kiểm tra tiến trình backfill
+router.get('/backfill-status', async (req, res) => {
+  try {
+    const cfg = await mongoose.connection.db.collection('gps_config')
+      .findOne({ key: 'last_backfill' })
+    const kmCount = await mongoose.connection.db.collection('gps_km_history')
+      .countDocuments()
+    res.json({ lastBackfill: cfg?.value || null, done: cfg?.done, errors: cfg?.errors, kmRecords: kmCount })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
 module.exports = router
