@@ -356,4 +356,86 @@ router.get('/debug/:bienSo', async (req, res) => {
   }
 })
 
+
+// ── POST /api/xe/sync-drive-images ────────────────────────────────────────────
+// Nhận rootFolderId → list subfolder → match bienSo → batch update hinhAnh
+router.post('/sync-drive-images', async (req, res) => {
+  try {
+    const { rootFolderId } = req.body
+    if (!rootFolderId) return res.status(400).json({ error: 'Thiếu rootFolderId' })
+
+    const apiKey = process.env.GOOGLE_API_KEY
+    if (!apiKey) return res.status(500).json({ error: 'GOOGLE_API_KEY chưa cấu hình' })
+
+    // 1. List tất cả subfolder trong rootFolder (pageSize=1000)
+    let allFolders = []
+    let pageToken = undefined
+    do {
+      const params = new URLSearchParams({
+        q: `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'nextPageToken,files(id,name)',
+        pageSize: 1000,
+        key: apiKey,
+        ...(pageToken ? { pageToken } : {})
+      })
+      const resp = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`)
+      const data = await resp.json()
+      if (data.error) return res.status(500).json({ error: 'Drive API: ' + data.error.message })
+      allFolders = allFolders.concat(data.files || [])
+      pageToken = data.nextPageToken
+    } while (pageToken)
+
+    if (allFolders.length === 0)
+      return res.json({ success: true, matched: 0, notFound: 0, message: 'Không tìm thấy subfolder nào' })
+
+    // 2. Lấy tất cả xe từ MongoDB
+    const mongoose = require('mongoose')
+    const col = mongoose.connection.db.collection('xetai')
+    const allXe = await col.find({}, { projection: { 'BIỂN SỐ': 1, 'BIẼNSỐ': 1, 'Biển số': 1 } }).toArray()
+
+    // Normalize bienSo: bỏ dấu cách, chữ hoa
+    const normalize = s => String(s || '').replace(/[\s\-\.]/g, '').toUpperCase()
+
+    // Build map: normalized bienSo → _id
+    const xeMap = new Map()
+    for (const xe of allXe) {
+      const bs = xe['BIỂN SỐ'] || xe['BIẼNSỐ'] || xe['Biển số'] || ''
+      if (bs) xeMap.set(normalize(bs), xe._id)
+    }
+
+    // 3. Match folder name với bienSo
+    let matched = 0, notFound = []
+    const bulkOps = []
+
+    for (const folder of allFolders) {
+      const folderNorm = normalize(folder.name)
+      const xeId = xeMap.get(folderNorm)
+      if (xeId) {
+        const folderUrl = `https://drive.google.com/drive/folders/${folder.id}`
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: xeId },
+            update: { $set: { hinhAnh: folderUrl } }
+          }
+        })
+        matched++
+      } else {
+        notFound.push(folder.name)
+      }
+    }
+
+    // 4. Batch update
+    if (bulkOps.length > 0) await col.bulkWrite(bulkOps)
+
+    res.json({
+      success: true,
+      total:    allFolders.length,
+      matched,
+      notFound: notFound.length,
+      notFoundList: notFound.slice(0, 20), // trả về tối đa 20 để debug
+      message: `Đã map ${matched}/${allFolders.length} folder vào hinhAnh`
+    })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
 module.exports = router
