@@ -84,15 +84,16 @@ function calcCamStatus(vehicle) {
   if (camCount === 0 || cameras.length === 0)
     return { code: 'no_cam', label: 'Không có cam', color: '#8E8E93', active: 0, total: 0 }
 
-  // Chỉ xét camCount channels đầu tiên (vd: camCount=2 → ch1+ch2, bỏ ch3,ch4)
-  const sorted = [...cameras].sort((a, b) => (a.channel || 0) - (b.channel || 0))
-  const actual = sorted.slice(0, camCount)
-  const active = actual.filter(c => c.record === true || c.record === 'true').length
+  // Đếm tất cả record:true trong cameras array
+  const active = cameras.filter(c => c.record === true).length
   const lost   = camCount - active
 
-  if (lost === 0)   return { code: 'ok',       label: `${active}/${camCount} cam OK`,  color: '#34C759', active, total: camCount }
-  if (active === 0) return { code: 'lost_all', label: `Mất hết ${camCount} cam`,     color: '#FF3B30', active, total: camCount }
-  return              { code: 'partial',     label: `Mất ${lost}/${camCount} cam`, color: '#FF9500', active, total: camCount }
+  // lost = 0           → tất cả cam OK
+  // 0 < lost < camCount → mất 1 số cam
+  // lost = camCount     → mất hoàn toàn
+  if (lost <= 0)        return { code: 'ok',       label: `${active}/${camCount} cam OK`,  color: '#34C759', active, total: camCount }
+  if (lost >= camCount) return { code: 'lost_all', label: `Mất hết ${camCount} cam`,     color: '#FF3B30', active, total: camCount }
+  return                       { code: 'partial',  label: `Mất ${lost}/${camCount} cam`, color: '#FF9500', active, total: camCount }
 }
 
 // ── POST /api/gps/set-token ────────────────────────────────
