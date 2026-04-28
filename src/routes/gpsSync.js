@@ -149,6 +149,8 @@ router.post('/sync', async (req, res) => {
     const statusCol = mongoose.connection.db.collection('gps_status')
     const statusOps = vehicles.map(v => {
       const plateRaw = v.vehiclePlate || v.plate || ''
+      // camCount nằm trong serverServiceInfo.camcount
+      const camCount = v.serverServiceInfo?.camcount ?? v.camCount ?? 0
       return {
         updateOne: {
           filter: { plateRaw },
@@ -157,9 +159,9 @@ router.post('/sync', async (req, res) => {
             vehicleId:   v.vehicleId || v.id || null,
             isOnline:    v.isOnline  ?? v.online ?? false,
             totalKm:     parseFloat(v.totalKm || 0),
-            gpsTime:     v.gpsTime   || null,   // "2026-04-28T19:57:39"
-            camCount:    v.camCount  || 0,
-            cameras:     v.cameras   || [],     // array { channel, record, state... }
+            gpsTime:     v.gpsTime   || null,
+            camCount,
+            cameras:     v.cameras   || [],
             speed:       v.speed     || 0,
             lat:         v.lat       || null,
             lng:         v.lng       || null,
