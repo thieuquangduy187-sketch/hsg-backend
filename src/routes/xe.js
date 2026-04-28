@@ -33,7 +33,14 @@ router.get('/', async (req, res) => {
 router.get('/all', async (req, res) => {
   try {
     const docs = await Xe.find({}).sort({ STT: 1 })
-    res.json(docs.map(d => d.toAPI()))
+    const rows = docs.map(d => d.toAPI())
+    // Dedup: nếu DB có trùng bienSo, giữ bản có _id mới nhất
+    const seen = new Map()
+    for (const r of rows) {
+      const key = (r.bienSo || '').trim().toUpperCase() || r._id
+      if (!seen.has(key)) seen.set(key, r)
+    }
+    res.json(Array.from(seen.values()))
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
@@ -269,11 +276,16 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
         let filter
         if (bienSo) {
-          // Always match by biển số first (most reliable)
+          // Match by biển số value (ASCII, không bị ảnh hưởng Unicode normalization)
+          // Dùng $or rộng với regex để tránh miss do Unicode NFC/NFD mismatch
+          const bsRegex = new RegExp('^' + bienSo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i')
           filter = { $or: [
             { 'BIỂN SỐ': bienSo },
             { 'BIẼNSỐ':  bienSo },
             { 'Biển số': bienSo },
+            { 'BIỂN SỐ': bsRegex },
+            { 'BIẼNSỐ':  bsRegex },
+            { 'Biển số': bsRegex },
           ]}
         } else if (maTaiSan) {
           filter = { 'Mã TS kế toán': maTaiSan }
