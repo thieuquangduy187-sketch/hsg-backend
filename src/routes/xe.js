@@ -55,84 +55,32 @@ router.get('/images', async (req, res) => {
     const folderId = m[1]
 
     const apiKey = process.env.GOOGLE_API_KEY
+    if (!apiKey) return res.status(500).json({ error: 'GOOGLE_API_KEY chưa cấu hình', urls: [] })
 
-    if (apiKey) {
-      // Drive API v3: lấy files + webContentLink + thumbnailLink
-      const apiUrl = `https://www.googleapis.com/drive/v3/files` +
-        `?q=%27${folderId}%27+in+parents+and+mimeType+contains+%27image/%27+and+trashed%3Dfalse` +
-        `&fields=files(id,name,webContentLink,thumbnailLink,mimeType)` +
-        `&pageSize=50&key=${apiKey}&supportsAllDrives=true`
-      const resp = await fetch(apiUrl)
-      const data = await resp.json()
+    // Drive API v3: chỉ cần id và name
+    const apiUrl = `https://www.googleapis.com/drive/v3/files` +
+      `?q=%27${folderId}%27+in+parents+and+mimeType+contains+%27image/%27+and+trashed%3Dfalse` +
+      `&fields=files(id,name)&pageSize=50&key=${apiKey}`
+    const resp = await fetch(apiUrl)
+    const data = await resp.json()
 
-      if (!data.error && data.files && data.files.length > 0) {
-        // Dùng proxy qua backend để tránh CORS và auth issue với lh3
-        const urls = data.files.map(f =>
-          `/api/xe/image-proxy?id=${f.id}&key=${apiKey}`
-        )
-        return res.json({ urls, source: 'api', count: urls.length })
-      }
-      // Drive API trả về files=[] → folder chưa share public hoặc API key bị restrict
-      if (data.error) {
-        console.error('Drive API error:', data.error.message)
-      }
+    if (data.error) {
+      console.error('Drive API error:', JSON.stringify(data.error))
+      return res.status(500).json({ error: data.error.message, urls: [] })
     }
 
-    // Fallback: scrape HTML folder public
-    const html = await fetch(
-      `https://drive.google.com/drive/folders/${folderId}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36' } }
-    ).then(r => r.text())
+    if (!data.files || data.files.length === 0)
+      return res.json({ urls: [], source: 'api', count: 0 })
 
-    const fileIds = []
-    const regex = /\"([a-zA-Z0-9_-]{33,})\".*?(?:image|jpeg|jpg|png|webp)/gi
-    const regex2 = /\/file\/d\/([a-zA-Z0-9_-]{25,})/g
-    let match
-    while ((match = regex2.exec(html)) !== null) {
-      if (!fileIds.includes(match[1])) fileIds.push(match[1])
-    }
-
-    // URL dùng /uc?export=view thay vì lh3 — hoạt động với file share public
-    const urls = fileIds.map(id => `https://drive.google.com/uc?export=view&id=${id}`)
-    res.json({ urls, source: 'scrape', count: urls.length })
+    // thumbnail?id=FILE_ID&sz=w1000 — hoạt động với folder share public
+    // không cần auth riêng lẻ từng file, không bị CORS
+    const urls = data.files.map(f =>
+      `https://drive.google.com/thumbnail?id=${f.id}&sz=w1000`
+    )
+    res.json({ urls, source: 'api', count: urls.length })
 
   } catch(e) {
     res.status(500).json({ error: e.message, urls: [] })
-  }
-})
-
-// GET /api/xe/image-proxy?id=FILE_ID&key=API_KEY — proxy ảnh từ Drive qua backend
-// Tránh CORS + auth issue khi load ảnh trực tiếp từ lh3.googleusercontent.com
-router.get('/image-proxy', async (req, res) => {
-  try {
-    const { id, key } = req.query
-    if (!id) return res.status(400).send('Missing id')
-
-    // Thử thumbnail trước (nhỏ hơn, load nhanh hơn)
-    const imgUrl = `https://lh3.googleusercontent.com/d/${id}`
-    const imgResp = await fetch(imgUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    })
-
-    if (imgResp.ok) {
-      const contentType = imgResp.headers.get('content-type') || 'image/jpeg'
-      res.setHeader('Content-Type', contentType)
-      res.setHeader('Cache-Control', 'public, max-age=86400')
-      imgResp.body.pipe(res)
-    } else {
-      // Fallback: dùng /uc?export=view
-      const fallback = await fetch(`https://drive.google.com/uc?export=view&id=${id}`)
-      if (fallback.ok) {
-        const ct = fallback.headers.get('content-type') || 'image/jpeg'
-        res.setHeader('Content-Type', ct)
-        res.setHeader('Cache-Control', 'public, max-age=86400')
-        fallback.body.pipe(res)
-      } else {
-        res.status(404).send('Image not found')
-      }
-    }
-  } catch(e) {
-    res.status(500).send(e.message)
   }
 })
 
