@@ -351,4 +351,63 @@ router.post('/fix-one', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
+
+// ══════════════════════════════════════════════════════════
+// GET /api/cua-hang/debug-dot/:dot — debug batch update
+// ══════════════════════════════════════════════════════════
+router.get('/debug-dot/:dot', async (req, res) => {
+  try {
+    const dot    = decodeURIComponent(req.params.dot)
+    const cdCol  = db().collection('danhsachchuyendoi')
+    const xeCol  = db().collection('xetai')
+    const chCol  = db().collection('danhsachcuahang')
+
+    const xeDot = await cdCol.find({ 'Đợt chuyển đổi': dot }).toArray()
+    const allCH = await chCol.find({}).toArray()
+
+    const results = []
+    for (const xe of xeDot.slice(0, 10)) { // debug 10 xe đầu
+      const bienSo = xe['Biển số'] || xe.bienSo || ''
+
+      // Thử nhiều cách tìm xe trong xetai
+      const xeDoc = await xeCol.findOne({
+        $or: [
+          { 'BIỂN SỐ': bienSo },
+          { 'BIẼNSỐ':  bienSo },
+          { 'Biển số': bienSo },
+        ]
+      }, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1, 'Cưả hàng sử dụng':1, 'Tỉnh mới':1 } })
+
+      const tenCH = xeDoc?.['Cưả hàng sử dụng'] || ''
+      const tinh  = xeDoc?.['Tỉnh mới'] || ''
+
+      // Thử lookup CH
+      const normTen = normStr(tenCH)
+      const chDoc = allCH.find(d =>
+        normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+      )
+
+      results.push({
+        bienSo_cd:    bienSo,
+        bienSo_found: !!(xeDoc),
+        tenCH,
+        tinh,
+        ch_found:     !!(chDoc),
+        hsg_mach:     chDoc?.HSG_MACH,
+        hsh_mach:     chDoc?.HSH_MACH,
+        // Xem biển số thực trong xetai (để so sánh format)
+        xetai_sample: xeDoc ? (xeDoc['BIỂN SỐ'] || xeDoc['BIẼNSỐ'] || xeDoc['Biển số']) : null
+      })
+    }
+
+    // Thêm: xem format biển số thực tế trong danhsachchuyendoi
+    const sampleBS = xeDot.slice(0, 3).map(x => ({
+      raw: x['Biển số'] || x.bienSo,
+      keys: Object.keys(x).filter(k => k.toLowerCase().includes('bi') || k.toLowerCase().includes('số'))
+    }))
+
+    res.json({ dot, total: xeDot.length, sampleBS, results })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
 module.exports = router
