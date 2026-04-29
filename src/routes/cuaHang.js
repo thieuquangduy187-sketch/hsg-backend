@@ -15,28 +15,51 @@ async function isHSH(dotChuyenDoi) {
   return done.includes(dotChuyenDoi)
 }
 
-// ── Helper: lookup thông tin CH từ danhsachcuahang ────────
-// Trả về { ma, tinh, mien, tenCH } hoặc null
-async function lookupCH(tenCH, tinhGoi) {
-  const col = db().collection('danhsachcuahang')
-  // Tìm theo tên + tỉnh nếu có
-  const query = tinhGoi
-    ? { $or: [
-        { HSG_TENCH: tenCH, HSG_TINH: tinhGoi },
-        { HSH_TENCH: tenCH, HSG_TINH: tinhGoi },
-      ]}
-    : { $or: [{ HSG_TENCH: tenCH }, { HSH_TENCH: tenCH }] }
+// ── Helper: normalize string để so sánh (bỏ dấu cách thừa, lowercase)
+function normStr(s) {
+  return (s || '').trim().toLowerCase()
+    .normalize('NFC') // chuẩn hóa Unicode
+}
 
-  const doc = await col.findOne(query)
+// ── Helper: xe có phải Tổng kho không (tên bắt đầu bằng TK)
+function isTongKho(tenCH) {
+  return /^(TK|Tổng kho|Tong kho)/i.test((tenCH || '').trim())
+}
+
+// ── Helper: lookup thông tin CH từ danhsachcuahang ────────
+// isHsh: true → trả HSH_MACH, false → trả HSG_MACH
+async function lookupCH(tenCH, tinhGoi, isHsh) {
+  const col    = db().collection('danhsachcuahang')
+  const allDocs = await col.find({}).toArray()
+  const normTen = normStr(tenCH)
+  const normTinh = normStr(tinhGoi)
+
+  // Tìm exact match trước (NFC normalized)
+  let doc = allDocs.find(d => {
+    const matchTen = normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+    if (!matchTen) return false
+    if (normTinh) return normStr(d.HSG_TINH) === normTinh
+    return true
+  })
+
+  // Nếu không có tỉnh → lấy kết quả đầu tiên theo tên
+  if (!doc && !normTinh) {
+    doc = allDocs.find(d =>
+      normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+    )
+  }
+
   if (!doc) return null
+
+  // Fix 2: Tổng kho → tỉnh mới = tên cửa hàng (không dùng HSG_TINH)
+  const tinh = isTongKho(tenCH) ? tenCH : (doc.HSG_TINH || '')
+
   return {
-    hsgMa:   doc.HSG_MACH,
-    hshMa:   doc.HSH_MACH,
-    tinh:    doc.HSG_TINH,
-    mien:    doc['Miền'] || doc.Mien,
+    ma:      isHsh ? (doc.HSH_MACH || doc.HSG_MACH) : doc.HSG_MACH,
+    tinh,
+    mien:    doc['Miền'] || doc.Mien || '',
     hsgTen:  doc.HSG_TENCH,
     hshTen:  doc.HSH_TENCH,
-    diaChi:  doc.HSH_DIACHICH,
   }
 }
 
@@ -106,25 +129,21 @@ router.post('/batch-update', async (req, res) => {
       const tinh  = xeDoc['Tỉnh mới'] || ''
 
       // Lookup thông tin HSH từ danhsachcuahang
-      const chDoc = await chCol.findOne({
-        $or: [
-          { HSG_TENCH: tenCH, HSG_TINH: tinh },
-          { HSG_TENCH: tenCH },
-        ]
-      })
+      // Dùng lookupCH mới (isHsh=true vì batch update = đã chuyển HSH)
+      const info = await lookupCH(tenCH, tinh, true)
+      if (!info) { notFound.push(`${bienSo}(CH không tìm thấy)`); continue }
 
-      if (!chDoc) { notFound.push(`${bienSo}(CH không tìm thấy)`); continue }
+      // Fix 2: Tổng kho → tỉnh mới = tên cửa hàng
+      const newTinh = isTongKho(tenCH) ? tenCH : info.tinh
 
-      // Update xe theo HSH
       bulkOps.push({
         updateOne: {
           filter: { $or: [{ 'BIỂN SỐ': bienSo }, { 'BIẼNSỐ': bienSo }, { 'Biển số': bienSo }] },
           update: { $set: {
-            'Mã hiện tại':       chDoc.HSH_MACH  || chDoc.HSG_MACH,
-            'Cưả hàng sử dụng': chDoc.HSH_TENCH || chDoc.HSG_TENCH,
-            'Tỉnh mới':          chDoc.HSG_TINH,
-            'Miền':              chDoc['Miền'] || chDoc.Mien,
-            // KHÔNG update Cây điều động
+            'Mã hiện tại':       info.ma,
+            'Tỉnh mới':          newTinh,
+            'Miền':              info.mien,
+            // KHÔNG update Cây điều động, KHÔNG đổi tên CH
           }}
         }
       })
@@ -219,6 +238,15 @@ router.get('/audit', async (req, res) => {
       projection: { 'BIỂN SỐ': 1, 'BIẼNSỐ': 1, 'Biển số': 1, 'Cưả hàng sử dụng': 1, 'Tỉnh mới': 1, 'Miền': 1, 'Mã hiện tại': 1 }
     }).toArray()
 
+    // Load audit_ignore list
+    const ignoreCol = db().collection('audit_ignore')
+    const ignoreSet = new Set(
+      (await ignoreCol.find({}).toArray()).map(d => `${d.bienSo}|${d.tenCH}`)
+    )
+
+    // Load toàn bộ danhsachcuahang 1 lần (tránh N+1 query)
+    const allCH = await chCol.find({}).toArray()
+
     const issues = []
     for (const xe of allXe) {
       const bienSo  = xe['BIỂN SỐ'] || xe['BIẼNSỐ'] || xe['Biển số'] || ''
@@ -228,30 +256,38 @@ router.get('/audit', async (req, res) => {
       const maXe    = xe['Mã hiện tại'] || ''
       if (!tenCH) continue
 
-      const dot    = dotMap.get(bienSo.toUpperCase())
-      const isHsh  = dot ? dotsDone.includes(dot) : false
+      // Bỏ qua nếu đã ignore
+      if (ignoreSet.has(`${bienSo}|${tenCH}`)) continue
 
-      // Lookup danhsachcuahang
-      const chDoc = await chCol.findOne({
-        $or: [
-          { HSG_TENCH: tenCH, HSG_TINH: tinhXe },
-          { HSH_TENCH: tenCH, HSG_TINH: tinhXe },
-          { HSG_TENCH: tenCH },
-          { HSH_TENCH: tenCH },
-        ]
+      const dot   = dotMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g, '')) || ''
+      const isHsh = dot ? dotsDone.includes(dot) : false
+
+      // Lookup với NFC normalize
+      const normTen  = normStr(tenCH)
+      const normTinh = normStr(tinhXe)
+      let chDoc = allCH.find(d => {
+        const matchTen = normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+        if (!matchTen) return false
+        if (normTinh && !isTongKho(tenCH)) return normStr(d.HSG_TINH) === normTinh
+        return true
       })
+      // Fallback: tìm chỉ theo tên
+      if (!chDoc) chDoc = allCH.find(d =>
+        normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+      )
 
       if (!chDoc) {
         issues.push({ bienSo, tenCH, tinhXe, maXe, loai: 'NOT_FOUND', message: 'Tên CH không tìm thấy trong danh sách' })
         continue
       }
 
-      const expectMa   = isHsh ? chDoc.HSH_MACH  : chDoc.HSG_MACH
-      const expectTinh = chDoc.HSG_TINH
-      const expectMien = chDoc['Miền'] || chDoc.Mien
+      const expectMa   = isHsh ? (chDoc.HSH_MACH || chDoc.HSG_MACH) : chDoc.HSG_MACH
+      // Fix 2: Tổng kho → expectTinh = tenCH
+      const expectTinh = isTongKho(tenCH) ? tenCH : (chDoc.HSG_TINH || '')
+      const expectMien = chDoc['Miền'] || chDoc.Mien || ''
 
       const errs = []
-      if (maXe && expectMa && maXe !== expectMa)     errs.push(`Mã CH: "${maXe}" ≠ "${expectMa}"`)
+      if (maXe   && expectMa   && maXe   !== expectMa)   errs.push(`Mã CH: "${maXe}" ≠ "${expectMa}"`)
       if (tinhXe && expectTinh && tinhXe !== expectTinh) errs.push(`Tỉnh: "${tinhXe}" ≠ "${expectTinh}"`)
       if (mienXe && expectMien && mienXe !== expectMien) errs.push(`Miền: "${mienXe}" ≠ "${expectMien}"`)
 
@@ -265,6 +301,33 @@ router.get('/audit', async (req, res) => {
     }
 
     res.json({ total: allXe.length, issues: issues.length, data: issues })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ══════════════════════════════════════════════════════════
+// POST /api/cua-hang/ignore — bỏ qua cảnh báo 1 xe
+// ══════════════════════════════════════════════════════════
+router.post('/ignore', async (req, res) => {
+  try {
+    const { bienSo, tenCH } = req.body
+    if (!bienSo || !tenCH) return res.status(400).json({ error: 'Thiếu thông tin' })
+    await db().collection('audit_ignore').updateOne(
+      { bienSo, tenCH },
+      { $set: { bienSo, tenCH, ignoredAt: new Date() } },
+      { upsert: true }
+    )
+    res.json({ success: true })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ══════════════════════════════════════════════════════════
+// POST /api/cua-hang/unignore — bỏ bỏ qua (audit lại)
+// ══════════════════════════════════════════════════════════
+router.post('/unignore', async (req, res) => {
+  try {
+    const { bienSo, tenCH } = req.body
+    await db().collection('audit_ignore').deleteOne({ bienSo, tenCH })
+    res.json({ success: true })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
