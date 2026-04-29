@@ -226,11 +226,15 @@ router.get('/audit', async (req, res) => {
     const dotsDone = cfg?.dots || []
 
     // Map biển số → đợt chuyển đổi
+    // Lưu cả 2 format: gốc và stripped để match được cả 2 kiểu
     const cdDocs = await cdCol.find({}, { projection: { 'Biển số': 1, 'Đợt chuyển đổi': 1 } }).toArray()
     const dotMap = new Map()
     for (const d of cdDocs) {
       const bs = d['Biển số'] || ''
-      if (bs) dotMap.set(bs.toUpperCase(), d['Đợt chuyển đổi'])
+      if (!bs) continue
+      dotMap.set(bs.toUpperCase().trim(), d['Đợt chuyển đổi'])
+      // Thêm format stripped để match khi lookup
+      dotMap.set(bs.toUpperCase().replace(/[\s\-\.]/g, ''), d['Đợt chuyển đổi'])
     }
 
     // Lấy tất cả xe
@@ -259,7 +263,10 @@ router.get('/audit', async (req, res) => {
       // Bỏ qua nếu đã ignore
       if (ignoreSet.has(`${bienSo}|${tenCH}`)) continue
 
-      const dot   = dotMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g, '')) || ''
+      // Thử lookup biển số theo cả 2 format
+      const dot   = dotMap.get(bienSo.toUpperCase().trim())
+               || dotMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g, ''))
+               || ''
       const isHsh = dot ? dotsDone.includes(dot) : false
 
       // Lookup với NFC normalize
@@ -364,6 +371,18 @@ router.get('/debug-dot/:dot', async (req, res) => {
 
     const xeDot = await cdCol.find({ 'Đợt chuyển đổi': dot }).toArray()
     const allCH = await chCol.find({}).toArray()
+    const cfg = await db().collection('chuyen_doi_config').findOne({ key: 'done' })
+    const dotsDone = cfg?.dots || []
+
+    // Build dotMap với fix mới
+    const cdAll = await cdCol.find({}, { projection: { 'Biển số': 1, 'Đợt chuyển đổi': 1 } }).toArray()
+    const dotMap = new Map()
+    for (const d of cdAll) {
+      const bs = d['Biển số'] || ''
+      if (!bs) continue
+      dotMap.set(bs.toUpperCase().trim(), d['Đợt chuyển đổi'])
+      dotMap.set(bs.toUpperCase().replace(/[\s\-\.]/g,''), d['Đợt chuyển đổi'])
+    }
 
     const results = []
     for (const xe of xeDot.slice(0, 10)) { // debug 10 xe đầu
@@ -387,15 +406,20 @@ router.get('/debug-dot/:dot', async (req, res) => {
         normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
       )
 
+      // Check dotMap với format mới
+      const dotFound = dotMap.get(bienSo.toUpperCase().trim())
+                    || dotMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g,''))
       results.push({
         bienSo_cd:    bienSo,
         bienSo_found: !!(xeDoc),
+        dot_found:    dotFound || null,
+        isHsh:        dotFound ? dotsDone.includes(dotFound) : false,
         tenCH,
         tinh,
         ch_found:     !!(chDoc),
         hsg_mach:     chDoc?.HSG_MACH,
         hsh_mach:     chDoc?.HSH_MACH,
-        // Xem biển số thực trong xetai (để so sánh format)
+        expect_ma:    dotFound && dotsDone.includes(dotFound) ? chDoc?.HSH_MACH : chDoc?.HSG_MACH,
         xetai_sample: xeDoc ? (xeDoc['BIỂN SỐ'] || xeDoc['BIẼNSỐ'] || xeDoc['Biển số']) : null
       })
     }
