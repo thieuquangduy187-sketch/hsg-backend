@@ -102,60 +102,76 @@ router.post('/batch-update', async (req, res) => {
     const { dot } = req.body
     if (!dot) return res.status(400).json({ error: 'Thiếu tên đợt' })
 
-    const xeCol  = db().collection('xetai')
-    const cdCol  = db().collection('danhsachchuyendoi')
-    const chCol  = db().collection('danhsachcuahang')
+    const xeCol = db().collection('xetai')
+    const cdCol = db().collection('danhsachchuyendoi')
 
-    // Lấy danh sách xe thuộc đợt này
     const xeDot = await cdCol.find({ 'Đợt chuyển đổi': dot }).toArray()
     if (!xeDot.length) return res.json({ success: true, updated: 0, message: 'Không có xe nào trong đợt này' })
 
-    // Build map biển số → thông tin CH mới (HSH)
-    let updated = 0, notFound = []
+    // Load toàn bộ xetai 1 lần (tránh N query)
+    const allXe = await xeCol.find({}, {
+      projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1, 'Cưả hàng sử dụng':1, 'Tỉnh mới':1 }
+    }).toArray()
+    // Build map normalized biển số → xe doc
+    const xeMap = new Map()
+    for (const x of allXe) {
+      const bs = (x['BIỂN SỐ'] || x['BIẼNSỐ'] || x['Biển số'] || '').trim()
+      if (bs) {
+        xeMap.set(bs.toUpperCase(), x)
+        xeMap.set(bs.toUpperCase().replace(/[\s\-\.]/g,''), x)
+      }
+    }
+
+    const results = []   // chi tiết từng xe
     const bulkOps = []
 
     for (const xe of xeDot) {
-      const bienSo = xe['Biển số'] || xe.bienSo || ''
+      const bienSo = (xe['Biển số'] || xe.bienSo || '').trim()
       if (!bienSo) continue
 
-      // Tìm thông tin CH hiện tại của xe trong xetai
-      const xeDoc = await xeCol.findOne({
-        $or: [{ 'BIỂN SỐ': bienSo }, { 'BIẼNSỐ': bienSo }, { 'Biển số': bienSo }]
-      }, { projection: { 'Cưả hàng sử dụng': 1, 'Tỉnh mới': 1 } })
+      const xeDoc = xeMap.get(bienSo.toUpperCase())
+                 || xeMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g,''))
 
-      if (!xeDoc) { notFound.push(bienSo); continue }
+      if (!xeDoc) {
+        results.push({ bienSo, status: 'not_in_xetai', reason: 'Không tìm thấy trong danh sách xe tải (có thể là ô tô hoặc đã thanh lý)' })
+        continue
+      }
 
       const tenCH = xeDoc['Cưả hàng sử dụng'] || ''
       const tinh  = xeDoc['Tỉnh mới'] || ''
 
-      // Lookup thông tin HSH từ danhsachcuahang
-      // Dùng lookupCH mới (isHsh=true vì batch update = đã chuyển HSH)
+      if (!tenCH) {
+        results.push({ bienSo, status: 'no_cuahang', reason: 'Xe chưa có thông tin cửa hàng sử dụng' })
+        continue
+      }
+
       const info = await lookupCH(tenCH, tinh, true)
-      if (!info) { notFound.push(`${bienSo}(CH không tìm thấy)`); continue }
+      if (!info) {
+        results.push({ bienSo, tenCH, tinh, status: 'ch_not_found', reason: `Tên CH "${tenCH}" không tìm thấy trong danhsachcuahang` })
+        continue
+      }
 
-      // Fix 2: Tổng kho → tỉnh mới = tên cửa hàng
       const newTinh = isTongKho(tenCH) ? tenCH : info.tinh
-
       bulkOps.push({
         updateOne: {
           filter: { $or: [{ 'BIỂN SỐ': bienSo }, { 'BIẼNSỐ': bienSo }, { 'Biển số': bienSo }] },
-          update: { $set: {
-            'Mã hiện tại':       info.ma,
-            'Tỉnh mới':          newTinh,
-            'Miền':              info.mien,
-            // KHÔNG update Cây điều động, KHÔNG đổi tên CH
-          }}
+          update: { $set: { 'Mã hiện tại': info.ma, 'Tỉnh mới': newTinh, 'Miền': info.mien } }
         }
       })
-      updated++
+      results.push({ bienSo, tenCH, tinh, status: 'updated', ma: info.ma, tinhMoi: newTinh, mien: info.mien })
     }
 
     if (bulkOps.length) await xeCol.bulkWrite(bulkOps)
 
+    const updated   = results.filter(r => r.status === 'updated').length
+    const missed    = results.filter(r => r.status !== 'updated')
+
     res.json({
-      success: true, updated,
-      notFound: notFound.length,
-      notFoundList: notFound.slice(0, 20),
+      success: true,
+      total:   xeDot.length,
+      updated,
+      missed:  missed.length,
+      results, // toàn bộ chi tiết từng xe
       message: `Đã cập nhật ${updated}/${xeDot.length} xe theo ${dot}`
     })
   } catch(e) { res.status(500).json({ error: e.message }) }
