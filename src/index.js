@@ -13,7 +13,8 @@ const nhatTrinhNgayRoutes = require('./routes/nhatTrinhNgay')
 const giaDauRoutes      = require('./routes/giaDau')
 const xeHoatDongRoutes = require('./routes/xeHoatDong')
 const analyzeRoutes = require('./routes/analyze')
-const gpsSyncRoutes = require('./routes/gpsSync')
+const gpsSyncRoutes  = require('./routes/gpsSync')
+const cuaHangRoutes  = require('./routes/cuaHang')
 const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
 
@@ -39,7 +40,8 @@ app.use('/api/xe-hoat-dong', protect, xeHoatDongRoutes)
 app.use('/api/gia-dau', protect, giaDauRoutes)
 app.use('/api/import', protect, importRoutes)
 app.use('/api/analyze', protect, analyzeRoutes)
-app.use('/api/gps',     protect, gpsSyncRoutes)
+app.use('/api/gps',      protect, gpsSyncRoutes)
+app.use('/api/cua-hang', protect, cuaHangRoutes)
 
 // Temporary debug route - no auth needed
 app.get('/debug/xe/:bienSo', async (req, res) => {
