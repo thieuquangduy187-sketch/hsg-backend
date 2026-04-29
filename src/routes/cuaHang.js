@@ -15,51 +15,73 @@ async function isHSH(dotChuyenDoi) {
   return done.includes(dotChuyenDoi)
 }
 
-// ── Helper: normalize string để so sánh (bỏ dấu cách thừa, lowercase)
+// ── Helper: normalize string (lowercase, NFC, trim)
 function normStr(s) {
-  return (s || '').trim().toLowerCase()
-    .normalize('NFC') // chuẩn hóa Unicode
+  return (s || '').trim().toLowerCase().normalize('NFC')
 }
 
-// ── Helper: xe có phải Tổng kho không (tên bắt đầu bằng TK)
+// ── Helper: bỏ tiền tố địa danh hành chính
+// "Thành phố Trà Vinh 3" → "Trà Vinh 3"
+// "Tỉnh An Giang" → "An Giang"
+// "Cửa hàng Châu Đốc" → "Châu Đốc"
+function stripPrefix(s) {
+  return (s || '').trim()
+    .replace(/^(thành phố|tp\.?|tỉnh|cửa hàng|ch|huyện|quận|thị xã|tx\.?)\s+/i, '')
+    .trim()
+}
+
+// ── Helper: xe có phải Tổng kho không
 function isTongKho(tenCH) {
   return /^(TK|Tổng kho|Tong kho)/i.test((tenCH || '').trim())
 }
 
-// ── Helper: lookup thông tin CH từ danhsachcuahang ────────
-// isHsh: true → trả HSH_MACH, false → trả HSG_MACH
-async function lookupCH(tenCH, tinhGoi, isHsh) {
-  const col    = db().collection('danhsachcuahang')
-  const allDocs = await col.find({}).toArray()
-  const normTen = normStr(tenCH)
+// ── Helper: so sánh tên CH có match không (thử exact + strip prefix)
+function matchTenCH(dbTen, searchTen) {
+  if (!dbTen || !searchTen) return false
+  const a = normStr(dbTen)
+  const b = normStr(searchTen)
+  if (a === b) return true
+  // Thử strip prefix cả 2 phía
+  if (normStr(stripPrefix(dbTen)) === normStr(stripPrefix(searchTen))) return true
+  // Thử strip 1 phía
+  if (a === normStr(stripPrefix(searchTen))) return true
+  if (normStr(stripPrefix(dbTen)) === b) return true
+  return false
+}
+
+// ── Helper: lookup CH từ danhsachcuahang (allDocs đã load sẵn)
+// Fix 2: kiểm tra cả HSG_TENCH và HSH_TENCH
+// Fix 3: strip tiền tố địa danh khi so sánh
+function lookupFromDocs(allDocs, tenCH, tinhGoi) {
   const normTinh = normStr(tinhGoi)
 
-  // Tìm exact match trước (NFC normalized)
-  let doc = allDocs.find(d => {
-    const matchTen = normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
-    if (!matchTen) return false
-    if (normTinh) return normStr(d.HSG_TINH) === normTinh
-    return true
-  })
-
-  // Nếu không có tỉnh → lấy kết quả đầu tiên theo tên
-  if (!doc && !normTinh) {
-    doc = allDocs.find(d =>
-      normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
+  // Ưu tiên: match tên + tỉnh
+  if (normTinh) {
+    const exact = allDocs.find(d =>
+      (matchTenCH(d.HSG_TENCH, tenCH) || matchTenCH(d.HSH_TENCH, tenCH))
+      && normStr(d.HSG_TINH) === normTinh
     )
+    if (exact) return exact
   }
 
+  // Fallback: match tên không cần tỉnh
+  return allDocs.find(d =>
+    matchTenCH(d.HSG_TENCH, tenCH) || matchTenCH(d.HSH_TENCH, tenCH)
+  ) || null
+}
+
+// ── Helper: lookup với load collection (dùng khi không có allDocs sẵn)
+async function lookupCH(tenCH, tinhGoi, isHsh) {
+  const allDocs = await db().collection('danhsachcuahang').find({}).toArray()
+  const doc = lookupFromDocs(allDocs, tenCH, tinhGoi)
   if (!doc) return null
-
-  // Fix 2: Tổng kho → tỉnh mới = tên cửa hàng (không dùng HSG_TINH)
   const tinh = isTongKho(tenCH) ? tenCH : (doc.HSG_TINH || '')
-
   return {
-    ma:      isHsh ? (doc.HSH_MACH || doc.HSG_MACH) : doc.HSG_MACH,
+    ma:     isHsh ? (doc.HSH_MACH || doc.HSG_MACH) : doc.HSG_MACH,
     tinh,
-    mien:    doc['Miền'] || doc.Mien || '',
-    hsgTen:  doc.HSG_TENCH,
-    hshTen:  doc.HSH_TENCH,
+    mien:   doc['Miền'] || doc.Mien || '',
+    hsgTen: doc.HSG_TENCH,
+    hshTen: doc.HSH_TENCH,
   }
 }
 
@@ -108,10 +130,20 @@ router.post('/batch-update', async (req, res) => {
     const xeDot = await cdCol.find({ 'Đợt chuyển đổi': dot }).toArray()
     if (!xeDot.length) return res.json({ success: true, updated: 0, message: 'Không có xe nào trong đợt này' })
 
-    // Load toàn bộ xetai 1 lần (tránh N query)
-    const allXe = await xeCol.find({}, {
-      projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1, 'Cưả hàng sử dụng':1, 'Tỉnh mới':1 }
-    }).toArray()
+    // Load toàn bộ xetai + xeoto + danhsachcuahang 1 lần
+    const otoCol = db().collection('xeoto')
+    const [allXe, allOto, allCH] = await Promise.all([
+      xeCol.find({}, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1, 'Cưả hàng sử dụng':1, 'Tỉnh mới':1 } }).toArray(),
+      otoCol.find({}, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1 } }).toArray(),
+      db().collection('danhsachcuahang').find({}).toArray(),
+    ])
+    // Build otoSet
+    const otoSet = new Set()
+    for (const o of allOto) {
+      const bs = (o['BIỂN SỐ'] || o['BIẼNSỐ'] || o['Biển số'] || '').trim()
+      if (bs) { otoSet.add(bs.toUpperCase()); otoSet.add(bs.toUpperCase().replace(/[\s\-\.]/g,'')) }
+    }
+
     // Build map normalized biển số → xe doc
     const xeMap = new Map()
     for (const x of allXe) {
@@ -133,7 +165,10 @@ router.post('/batch-update', async (req, res) => {
                  || xeMap.get(bienSo.toUpperCase().replace(/[\s\-\.]/g,''))
 
       if (!xeDoc) {
-        results.push({ bienSo, status: 'not_in_xetai', reason: 'Không tìm thấy trong danh sách xe tải (có thể là ô tô hoặc đã thanh lý)' })
+        const isOto = otoSet.has(bienSo.toUpperCase()) || otoSet.has(bienSo.toUpperCase().replace(/[\s\-\.]/g,''))
+        results.push({ bienSo, status: 'not_in_xetai',
+          reason: isOto ? 'Xe ô tô con (không cần cập nhật)' : 'Không tìm thấy trong xetai — đã thanh lý hoặc biển số sai'
+        })
         continue
       }
 
@@ -145,7 +180,13 @@ router.post('/batch-update', async (req, res) => {
         continue
       }
 
-      const info = await lookupCH(tenCH, tinh, true)
+      // Fix 2+3: dùng lookupFromDocs (đã load allCH) + strip prefix
+      const doc = lookupFromDocs(allCH, tenCH, tinh)
+      const info = doc ? {
+        ma:   doc.HSH_MACH || doc.HSG_MACH,
+        tinh: isTongKho(tenCH) ? tenCH : (doc.HSG_TINH || ''),
+        mien: doc['Miền'] || doc.Mien || '',
+      } : null
       if (!info) {
         results.push({ bienSo, tenCH, tinh, status: 'ch_not_found', reason: `Tên CH "${tenCH}" không tìm thấy trong danhsachcuahang` })
         continue
@@ -258,14 +299,21 @@ router.get('/audit', async (req, res) => {
       projection: { 'BIỂN SỐ': 1, 'BIẼNSỐ': 1, 'Biển số': 1, 'Cưả hàng sử dụng': 1, 'Tỉnh mới': 1, 'Miền': 1, 'Mã hiện tại': 1 }
     }).toArray()
 
-    // Load audit_ignore list
+    // Load tất cả 1 lần
+    const otoCol2  = db().collection('xeoto')
     const ignoreCol = db().collection('audit_ignore')
-    const ignoreSet = new Set(
-      (await ignoreCol.find({}).toArray()).map(d => `${d.bienSo}|${d.tenCH}`)
-    )
-
-    // Load toàn bộ danhsachcuahang 1 lần (tránh N+1 query)
-    const allCH = await chCol.find({}).toArray()
+    const [allCH2, allOto2, ignoreDocs] = await Promise.all([
+      chCol.find({}).toArray(),
+      otoCol2.find({}, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1 } }).toArray(),
+      ignoreCol.find({}).toArray(),
+    ])
+    const allCH = allCH2
+    const ignoreSet = new Set(ignoreDocs.map(d => `${d.bienSo}|${d.tenCH}`))
+    const otoSet2 = new Set()
+    for (const o of allOto2) {
+      const bs = (o['BIỂN SỐ'] || o['BIẼNSỐ'] || o['Biển số'] || '').trim()
+      if (bs) { otoSet2.add(bs.toUpperCase()); otoSet2.add(bs.toUpperCase().replace(/[\s\-\.]/g,'')) }
+    }
 
     const issues = []
     for (const xe of allXe) {
@@ -285,21 +333,17 @@ router.get('/audit', async (req, res) => {
                || ''
       const isHsh = dot ? dotsDone.includes(dot) : false
 
-      // Lookup với NFC normalize
-      const normTen  = normStr(tenCH)
-      const normTinh = normStr(tinhXe)
-      let chDoc = allCH.find(d => {
-        const matchTen = normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
-        if (!matchTen) return false
-        if (normTinh && !isTongKho(tenCH)) return normStr(d.HSG_TINH) === normTinh
-        return true
-      })
-      // Fallback: tìm chỉ theo tên
-      if (!chDoc) chDoc = allCH.find(d =>
-        normStr(d.HSG_TENCH) === normTen || normStr(d.HSH_TENCH) === normTen
-      )
+      // Fix 1: bỏ qua nếu là xe ô tô
+      const bsNorm = bienSo.toUpperCase().replace(/[\s\-\.]/g,'')
+      if (otoSet2.has(bienSo.toUpperCase()) || otoSet2.has(bsNorm)) continue
+
+      // Fix 2+3: dùng lookupFromDocs với strip prefix
+      const chDoc = lookupFromDocs(allCH, tenCH, isTongKho(tenCH) ? '' : tinhXe)
 
       if (!chDoc) {
+        // Fix 2: kiểm tra đã update thủ công chưa (nếu mã khớp với bất kỳ HSG/HSH thì bỏ qua)
+        const anyMatch = allCH.find(d => d.HSG_MACH === maXe || d.HSH_MACH === maXe)
+        if (anyMatch) continue // đã cập nhật thủ công đúng → bỏ qua
         issues.push({ bienSo, tenCH, tinhXe, maXe, loai: 'NOT_FOUND', message: 'Tên CH không tìm thấy trong danh sách' })
         continue
       }
