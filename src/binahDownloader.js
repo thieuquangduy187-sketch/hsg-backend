@@ -21,10 +21,12 @@ async function binahLogin() {
       deviceID:   '87687f1f-4465-8024-f7ac-067a8befd10c',
     })
   })
-  // Log response headers để debug
-  const contentType = res.headers.get('content-type') || ''
-  console.log('[binahLogin] Content-Type:', contentType)
+  // Log TẤT CẢ response headers
   console.log('[binahLogin] Status:', res.status)
+  const allHeaders = {}
+  res.headers.forEach((v, k) => { allHeaders[k] = v })
+  console.log('[binahLogin] ALL Headers:', JSON.stringify(allHeaders))
+  const contentType = res.headers.get('content-type') || ''
   
   // Đọc raw text trước
   const rawText = await res.text()
