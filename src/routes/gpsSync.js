@@ -450,36 +450,27 @@ router.post('/backfill-history', async (req, res) => {
               {vehicleId:v.vehicleId,fromDate:fromStr,toDate:toStr,numberRow:2000,getAddress:false},token)
             const points=Array.isArray(data)?data:(data?.data||data?.result||[])
             if (!points.length){done++;return}
-            // Group by day, lấy previousKm cuối cùng của mỗi ngày
-            // previousKm = km tích lũy đến đầu ngày đó (dùng để so sánh ngày này vs ngày trước)
+            // Group by day → lấy max(km) mỗi ngày = odometer cuối ngày
+            // Đây là totalKm (odometer tích lũy) — cùng format với sync hàng ngày
             const byDay = {}
             for (const p of points) {
-              if (!p.dateTime) continue
+              if (!p.dateTime || p.km == null) continue
               const day = p.dateTime.split('T')[0]
-              if (!byDay[day]) byDay[day] = { kms: [], prevKms: [] }
-              if (p.km != null)         byDay[day].kms.push(parseFloat(p.km))
-              if (p.previousKm != null) byDay[day].prevKms.push(parseFloat(p.previousKm))
+              const km  = parseFloat(p.km)
+              if (!byDay[day] || km > byDay[day]) byDay[day] = km
             }
-            const ops = Object.entries(byDay).map(([date, d]) => {
-              const maxKm    = d.kms.length      ? Math.max(...d.kms)     : 0
-              const prevKm   = d.prevKms.length  ? Math.max(...d.prevKms) : maxKm
-              // kmToday = max km ngày đó - previousKm (km thực đi trong ngày)
-              const kmToday  = Math.max(0, Math.round(maxKm - prevKm))
-              return {
-                updateOne: {
-                  filter: { plateRaw: v.plateRaw, date },
-                  update: { $set: {
-                    plateRaw:   v.plateRaw,
-                    date,
-                    previousKm: Math.round(prevKm),   // làm tròn integer
-                    kmToday,              // km thực đi trong ngày
-                    totalKm:    kmToday,  // backward compat
-                    source:     'backfill'
-                  }},
-                  upsert: true
-                }
+            const ops = Object.entries(byDay).map(([date, maxKm]) => ({
+              updateOne: {
+                filter: { plateRaw: v.plateRaw, date },
+                update: { $set: {
+                  plateRaw: v.plateRaw,
+                  date,
+                  totalKm:  Math.round(maxKm), // odometer cuối ngày
+                  source:   'backfill'
+                }},
+                upsert: true
               }
-            })
+            }))
             if (ops.length) await db().collection('gps_km_history').bulkWrite(ops)
             done++
           } catch(e){console.error('[Backfill]',v.plateRaw,e.message);errors++}
