@@ -28,120 +28,86 @@ async function binahCall(path, body, token) {
 }
 
 // ══════════════════════════════════════════════════════════
-// GPS STATUS — Thuật toán phát hiện xe dừng hoạt động
-// Dựa trên previousKm từ /temperature-report/temperature/chart
-//
-// previousKm = km tích lũy đến đầu ngày đó
-// Nếu previousKm[N] == previousKm[N-1] → xe không đi ngày N (flat line)
-//
-// 3 trạng thái:
-//   stopped      → dừng > 3 ngày liên tiếp (flat line streak)
-//   low_activity → tổng km/tháng < 1000km (hoạt động rất ít)
-//   normal       → bình thường
+// GPS STATUS — Dùng totalKm từ sync (odometer tích lũy)
+// Logic: so sánh totalKm đầu period vs cuối period
+//   delta = totalKm[cuối] - totalKm[đầu]
+//   delta = 0   → xe không đi → dừng hoạt động
+//   delta < 1000 → hoạt động rất ít
+//   delta ≥ 1000 → bình thường
+// kmHistory: Map { plateRaw → [{ date, totalKm }] }
 // ══════════════════════════════════════════════════════════
 function calcGpsStatus(vehicle, kmHistory) {
-  const raw = (kmHistory.get(vehicle.plateRaw) || [])
-    .filter(r => r.previousKm != null)
-    .sort((a, b) => (a.date < b.date ? -1 : 1))
-
   const today   = new Date().toISOString().split('T')[0]
   const gpsTime = vehicle.gpsTime
 
-  // ── Fallback: không có km history → dùng gpsTime ─────────
-  if (!raw.length) {
+  // Lấy history đã sort ASC
+  const history = (kmHistory.get(vehicle.plateRaw) || [])
+    .filter(r => r.totalKm != null && r.totalKm > 0)
+    .sort((a, b) => a.date < b.date ? -1 : 1)
+
+  // ── Không có history → fallback gpsTime ─────────────────
+  if (history.length < 3) {
     if (!gpsTime) return { code: 'no_data', label: 'Không có dữ liệu', color: '#8E8E93', stoppedDays: 0 }
     const daysSince = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
-    if (daysSince > 7)
-      return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0], kmTotal: 0 }
-    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: daysSince, kmTotal: 0 }
-  }
-
-  // ── 1. Làm tròn previousKm về số nguyên ──────────────────
-  const history = raw.map(r => ({
-    date:   r.date,
-    prevKm: Math.round(r.previousKm)
-  }))
-
-  // ── 2. Đếm chuỗi ngày flat liên tiếp từ hôm nay trở về ──
-  let stoppedDays = 0
-  let stoppedSince = null
-  for (let i = history.length - 1; i >= 1; i--) {
-    const delta = history[i].prevKm - history[i - 1].prevKm
-    if (delta === 0) {
-      stoppedDays++
-      stoppedSince = history[i].date
-    } else {
-      break // xe có di chuyển → dừng đếm
-    }
-  }
-
-  // ── 3. Tổng km trong kỳ = prevKm[cuối] - prevKm[đầu] ────
-  const kmFirst  = history[0].prevKm
-  const kmLast   = history[history.length - 1].prevKm
-  const kmTotal  = Math.max(0, kmLast - kmFirst)
-
-  // ── 4. Xác định trạng thái ───────────────────────────────
-  const daysTracked = history.length
-
-  // ── Fix chính: kmTotal = 0 → xe không đi km nào trong period ──
-  // GPS vẫn ping nhưng xe không di chuyển
-  if (kmTotal === 0) {
-    const daysSinceGps = gpsTime
-      ? Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
-      : 0
-
-    // Số ngày dừng thực = max(flat line days, daysSince gpsTime)
-    // KHÔNG dùng daysTracked (chỉ là số ngày backfill, không phải ngày dừng)
-    const effectiveDays = Math.max(stoppedDays, daysSinceGps)
-
-    // Chỉ báo stopped khi effectiveDays > 7
-    // (tránh báo sai khi xe chỉ dừng 1-2 ngày cuối tuần)
-    if (effectiveDays > 7) {
+    if (daysSince > 7) {
       return {
-        code:        'stopped',
-        label:       `Xe dừng hoạt động ${effectiveDays} ngày`,
-        color:       '#FF3B30',
-        stoppedDays: effectiveDays,
-        stoppedSince: gpsTime ? gpsTime.split('T')[0] : null,
-        kmTotal:     0,
-        kmPerDay:    0
+        code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`,
+        color: '#FF3B30', stoppedDays: daysSince,
+        stoppedSince: gpsTime.split('T')[0], kmTotal: 0, kmPerDay: 0
       }
     }
+    return { code: 'no_data', label: 'Chưa đủ dữ liệu', color: '#8E8E93', stoppedDays: 0, kmTotal: 0 }
   }
 
-  // Ưu tiên: stopped (flat line) > low_activity > normal
+  // ── Tính km đã đi trong period ───────────────────────────
+  const kmFirst   = history[0].totalKm
+  const kmLast    = history[history.length - 1].totalKm
+  const kmDelta   = Math.max(0, Math.round(kmLast - kmFirst))
+  const daysInPeriod = Math.max(1, history.length)
+
+  // ── Đếm chuỗi ngày liên tiếp từ cuối mà totalKm không đổi
+  // (tức là xe không đi trong những ngày đó)
+  let stoppedDays  = 0
+  let stoppedSince = null
+  const kmLastVal  = Math.round(kmLast)
+  for (let i = history.length - 1; i >= 1; i--) {
+    const curr = Math.round(history[i].totalKm)
+    const prev = Math.round(history[i-1].totalKm)
+    if (curr - prev <= 5) { // ≤ 5km/ngày = coi như dừng (nhiễu GPS)
+      stoppedDays++
+      stoppedSince = history[i].date
+    } else break
+  }
+
+  // ── Quyết định trạng thái ────────────────────────────────
+  // Ưu tiên: stopped > low_activity > normal
+
   if (stoppedDays > 7) {
     return {
-      code:        'stopped',
-      label:       `Xe dừng hoạt động ${stoppedDays} ngày`,
-      color:       '#FF3B30',
-      stoppedDays, stoppedSince, kmTotal,
-      kmPerDay: (daysTracked - stoppedDays) > 0
-        ? Math.round(kmTotal / (daysTracked - stoppedDays))
-        : 0
+      code: 'stopped', label: `Xe dừng hoạt động ${stoppedDays} ngày`,
+      color: '#FF3B30', stoppedDays, stoppedSince, kmTotal: kmDelta,
+      kmPerDay: Math.round(kmDelta / Math.max(1, daysInPeriod - stoppedDays))
     }
   }
 
-  // Xe có chạy nhưng km/tháng quá thấp → hoạt động rất ít
-  const kmThreshold = Math.round(1000 * daysTracked / 30)
-  if (kmTotal > 0 && kmTotal < kmThreshold && kmTotal < 1000 && daysTracked >= 7) {
+  // Tổng km trong period quá thấp (< 1000km/tháng tỷ lệ theo số ngày)
+  const expectedMin = Math.round(1000 * daysInPeriod / 30)
+  if (kmDelta < expectedMin && daysInPeriod >= 7) {
     return {
-      code:    'low_activity',
-      label:   `Hoạt động rất ít (${kmTotal} km/${daysTracked} ngày)`,
-      color:   '#FF9500',
-      stoppedDays, kmTotal,
-      kmPerDay: daysTracked > 0 ? Math.round(kmTotal / daysTracked) : 0
+      code: 'low_activity',
+      label: `Hoạt động rất ít (${kmDelta} km / ${daysInPeriod} ngày)`,
+      color: '#FF9500', stoppedDays, kmTotal: kmDelta,
+      kmPerDay: Math.round(kmDelta / daysInPeriod)
     }
   }
 
   return {
-    code:     'normal',
-    label:    'Bình thường',
-    color:    '#34C759',
-    stoppedDays, kmTotal,
-    kmPerDay: daysTracked > 0 ? Math.round(kmTotal / daysTracked) : 0
+    code: 'normal', label: 'Bình thường', color: '#34C759',
+    stoppedDays, kmTotal: kmDelta,
+    kmPerDay: Math.round(kmDelta / daysInPeriod)
   }
 }
+
 
 // ── Camera Status Logic ─────────────────────────────────────
 function calcCamStatus(vehicle) {
@@ -222,7 +188,11 @@ router.post('/sync', async (req, res) => {
     })
     const kmOps = vehicles.filter(v=>v.vehiclePlate||v.plate).map(v => ({
       updateOne: { filter:{ plateRaw:v.vehiclePlate||v.plate, date:today },
-        update:{ $set:{ plateRaw:v.vehiclePlate||v.plate, date:today, totalKm:parseFloat(v.totalKm||0), recordedAt:now } },
+        update:{ $set:{
+          plateRaw: v.vehiclePlate||v.plate, date: today,
+          totalKm:  parseFloat(v.totalKm||0), // odometer từ Binhanh
+          recordedAt: now
+        }},
         upsert:true }
     }))
     await db().collection('gps_status').bulkWrite(statusOps)
@@ -251,11 +221,12 @@ router.get('/status', async (req, res) => {
     const kmHistory = new Map()
     for (const r of kmDocs) {
       if (!kmHistory.has(r.plateRaw)) kmHistory.set(r.plateRaw, [])
-      kmHistory.get(r.plateRaw).push({
-        date:       r.date,
-        previousKm: r.previousKm ?? r.totalKm ?? null,  // từ backfill mới
-        kmToday:    r.kmToday ?? 0
-      })
+      // Dùng totalKm (odometer từ sync) là chính xác nhất
+      // previousKm từ backfill chart cũng được nếu có
+      const km = r.totalKm ?? r.previousKm ?? null
+      if (km != null && km > 0) {
+        kmHistory.get(r.plateRaw).push({ date: r.date, totalKm: km })
+      }
     }
     const xeMap = await loadXeMap()
     const enriched = vehicles.map(v => {
