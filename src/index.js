@@ -54,6 +54,14 @@ app.post('/internal/gps/sync', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
+app.post('/internal/gps/upload-camera-excel', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret
+  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) return res.status(403).json({ error: 'Forbidden' })
+  // Forward sang route xử lý
+  req.url = '/upload-camera-excel'
+  gpsSyncRoutes(req, res)
+})
+
 app.post('/internal/gps/sync-camera', async (req, res) => {
   const secret = req.headers['x-cron-secret'] || req.query.secret
   if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
