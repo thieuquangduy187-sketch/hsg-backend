@@ -73,7 +73,15 @@ async function binahLogin() {
     || (typeof data?.data === 'string' && data.data.startsWith('eyJ') ? data.data : null)
   
   if (!token) {
-    console.log('[binahLogin] Cannot find token. data keys:', Object.keys(data || {}))
+    // In toàn bộ data.data để phân tích
+    const d = data?.data || {}
+    const allKeys = Object.keys(d).sort((a,b) => parseInt(a)-parseInt(b))
+    console.log('[binahLogin] data.data all keys:', allKeys.join(','))
+    // In value của từng key (không phải array)
+    allKeys.forEach(k => {
+      const v = d[k]
+      if (!Array.isArray(v)) console.log(`[binahLogin] data.data[${k}] =`, JSON.stringify(v).slice(0, 100))
+    })
     throw new Error('Login failed - token not found')
   }
   return token
