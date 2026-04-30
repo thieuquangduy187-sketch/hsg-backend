@@ -30,6 +30,42 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }))
 app.get('/', (req, res) => res.json({ status: 'ok', message: 'HSG Fleet API v2' }))
 app.use('/api/auth', authRoutes)
 
+// Internal cron routes — dùng CRON_SECRET thay vì JWT
+app.post('/internal/gps/auto-login', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret
+  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  try {
+    const { binahLogin, saveToken } = require('./binahDownloader')
+    const token = await binahLogin()
+    await saveToken(token)
+    res.json({ success: true, message: 'Token renewed' })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/internal/gps/sync', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret
+  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const { syncGPS } = require('./routes/gpsSync')
+    const result = await syncGPS()
+    res.json(result)
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/internal/gps/sync-camera', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret
+  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  try {
+    const { syncCameraStatus } = require('./binahDownloader')
+    const result = await syncCameraStatus()
+    res.json(result)
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
 // Protected routes — cần JWT
 app.use('/api/xe',    protect, xeRoutes)
 app.use('/api/oto',   protect, otoRoutes)
@@ -40,7 +76,7 @@ app.use('/api/xe-hoat-dong', protect, xeHoatDongRoutes)
 app.use('/api/gia-dau', protect, giaDauRoutes)
 app.use('/api/import', protect, importRoutes)
 app.use('/api/analyze', protect, analyzeRoutes)
-app.use('/api/gps',      protect, gpsSyncRoutes)
+app.use('/api/gps', protect, gpsSyncRoutes)
 app.use('/api/cua-hang', protect, cuaHangRoutes)
 
 // Temporary debug route - no auth needed
