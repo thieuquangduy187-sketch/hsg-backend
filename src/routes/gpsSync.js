@@ -126,7 +126,8 @@ router.get('/camera-status', async (req, res) => {
     const total   = rows.length
     const ok      = rows.filter(r => r.ok).length
     const warning = rows.filter(r => !r.ok).length
-    res.json({ lastSync: lastSync?.value, total, ok, warning, rows })
+    const lastSyncVN = lastSync?.valueVN || lastSync?.value || null
+    res.json({ lastSync: lastSyncVN, total, ok, warning, rows })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
@@ -255,11 +256,25 @@ router.get('/status', async (req, res) => {
       kmHistory.get(r.plateRaw).push({ date: r.date, km: r.totalKm })
     }
 
+    // Load xetai để lấy cuaHang + tinhMoi
+    const allXe = await db().collection('xetai').find({}, {
+      projection: { 'BIỂN SỐ':1,'BIẼNSỐ':1,'Biển số':1,'Cưả hàng sử dụng':1,'Tỉnh mới':1 }
+    }).toArray()
+    const xeInfoMap = new Map()
+    for (const xe of allXe) {
+      const bs = (xe['BIỂN SỐ']||xe['BIẼNSỐ']||xe['Biển số']||'').trim()
+      if (bs) xeInfoMap.set(bs.replace(/[-\.]/g,'').toUpperCase(), {
+        cuaHang: xe['Cưả hàng sử dụng']||'', tinhMoi: xe['Tỉnh mới']||''
+      })
+    }
+
     // Tính GPS status + Camera status cho từng xe
     const enriched = vehicles.map(v => {
       const gpsStatus = calcGpsStatus(v, kmHistory)
       const camStatus = calcCamStatus(v)
-      return { ...v, gpsStatus, camStatus }
+      const bsNorm = (v.plateRaw||'').replace(/_[A-Z]$/,'').replace(/[-\.]/g,'').toUpperCase()
+      const xeInfo = xeInfoMap.get(bsNorm) || { cuaHang:'', tinhMoi:'' }
+      return { ...v, gpsStatus, camStatus, cuaHang: xeInfo.cuaHang, tinhMoi: xeInfo.tinhMoi }
     })
 
     // Summary
@@ -555,45 +570,78 @@ async function syncGPS() {
 // ══════════════════════════════════════════════════════════
 router.post('/upload-camera-excel', async (req, res) => {
   try {
-    const { data, size } = req.body
+    const { data } = req.body
     if (!data) return res.status(400).json({ error: 'Thiếu data' })
 
     const buf = Buffer.from(data, 'base64')
-    console.log('[CameraExcel] Received buffer size:', buf.length)
 
-    // Parse Excel dùng xlsx package (đã có sẵn)
+    // 1. Parse Excel
     const XLSX = require('xlsx')
     const wb   = XLSX.read(buf, { type: 'buffer' })
     const ws   = wb.Sheets[wb.SheetNames[0]]
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
-    // Tìm header row
     const headerIdx = rows.findIndex(r => r[0] === 'STT' || r[1] === 'Phương tiện')
-    if (headerIdx < 0) return res.status(400).json({ error: 'Không tìm thấy header row', totalRows: rows.length, sample: rows.slice(0, 5) })
+    if (headerIdx < 0) return res.status(400).json({ error: 'Không tìm thấy header', sample: rows.slice(0,5) })
 
-    // Parse data rows
-    const parsed = []
-    for (const row of rows.slice(headerIdx + 1)) {
-      if (!row[0] || !row[1]) continue
-      const kenh = [row[2]||'', row[3]||'', row[4]||'', row[5]||'']
-      const active = kenh.filter(k => k === 'Hoạt động').length
-      parsed.push({
-        stt:    parseInt(row[0]) || 0,
-        bienSo: row[1],
-        kenh1: kenh[0], kenh2: kenh[1], kenh3: kenh[2], kenh4: kenh[3],
-        active, ok: active >= 2,
-        status: active >= 2 ? 'Bình thường' : active === 0 ? 'Mất hết cam' : `Cần kiểm tra (${active} kênh)`
+    // Helper: normalize biển số → bỏ dấu - và . (để match với xetai)
+    const normBS = s => String(s||'').replace(/[-\.]/g,'').toUpperCase().trim()
+
+    // 2. Load xetai để cross-reference + lấy cuaHang, tinhMoi
+    const xetaiCol = mongoose.connection.db.collection('xetai')
+    const allXe = await xetaiCol.find({}, {
+      projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1,
+        'Cưả hàng sử dụng':1, 'Tỉnh mới':1 }
+    }).toArray()
+
+    // Build map: normBS → { cuaHang, tinhMoi }
+    const xeMap = new Map()
+    for (const xe of allXe) {
+      const bs = xe['BIỂN SỐ'] || xe['BIẼNSỐ'] || xe['Biển số'] || ''
+      if (bs) xeMap.set(normBS(bs), {
+        cuaHang: xe['Cưả hàng sử dụng'] || '',
+        tinhMoi: xe['Tỉnh mới'] || ''
       })
     }
 
-    if (!parsed.length) return res.status(400).json({ error: 'Không parse được data', headerIdx, totalRows: rows.length })
+    // 3. Parse + cross-reference
+    const parsed = []
+    for (const row of rows.slice(headerIdx + 1)) {
+      if (!row[0] || !row[1]) continue
 
-    // Lưu vào DB
-    const col = mongoose.connection.db.collection('camera_status')
+      // Issue 2: chỉ giữ xe có trong xetai
+      const bienSoExcel = String(row[1]).trim() // "61C17273" (không có - và .)
+      const xeInfo = xeMap.get(bienSoExcel.toUpperCase())
+      if (!xeInfo) continue // bỏ xe không có trong xetai
+
+      // Issue 1: trim + normalize trước khi so sánh → fix encoding
+      const kenh = [row[2], row[3], row[4], row[5]]
+        .map(k => String(k||'').trim().normalize('NFC'))
+
+      // Đếm tất cả kênh "Hoạt động" không phân biệt vị trí kênh nào
+      const active = kenh.filter(k => k === 'Hoạt động').length
+
+      parsed.push({
+        bienSo:  bienSoExcel,
+        cuaHang: xeInfo.cuaHang,
+        tinhMoi: xeInfo.tinhMoi,
+        kenh1: kenh[0], kenh2: kenh[1], kenh3: kenh[2], kenh4: kenh[3],
+        active,
+        ok: active >= 2,
+        status: active >= 2 ? 'Bình thường'
+          : active === 0    ? 'Mất hết cam'
+          : `Cần kiểm tra (${active} kênh)`
+      })
+    }
+
+    if (!parsed.length) return res.status(400).json({ error: 'Không parse được data hoặc không khớp xetai' })
+
+    // 4. Lưu vào DB
+    const col    = mongoose.connection.db.collection('camera_status')
     const now    = new Date()
-    // Lưu thời gian theo giờ Việt Nam (UTC+7)
     const vnTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
     const vnStr  = vnTime.toISOString().replace('T',' ').replace('Z','').slice(0,19) + ' (GMT+7)'
+
     await col.deleteMany({})
     await col.insertMany(parsed.map(r => ({ ...r, syncedAt: now, syncedAtVN: vnStr })))
     await mongoose.connection.db.collection('gps_config').updateOne(
@@ -611,6 +659,148 @@ router.post('/upload-camera-excel', async (req, res) => {
     console.error('[CameraExcel] Error:', e.message)
     res.status(500).json({ error: e.message })
   }
+})
+
+
+// ══════════════════════════════════════════════════════════
+// GET /api/gps/camera-excel-export — Xuất báo cáo camera ra Excel
+// ══════════════════════════════════════════════════════════
+router.get('/camera-excel-export', async (req, res) => {
+  try {
+    const col  = mongoose.connection.db.collection('camera_status')
+    const cfg  = mongoose.connection.db.collection('gps_config')
+    const [rows, lastSync] = await Promise.all([
+      col.find({}).sort({ bienSo: 1 }).toArray(),
+      cfg.findOne({ key: 'last_camera_sync' })
+    ])
+    if (!rows.length) return res.status(404).json({ error: 'Chưa có data camera' })
+
+    const XLSX = require('xlsx')
+    const wb   = XLSX.utils.book_new()
+
+    // Sheet 1: Tất cả xe
+    const data = [
+      ['Báo cáo Camera - ' + (lastSync?.valueVN || new Date().toLocaleString('vi-VN'))],
+      [],
+      ['Biển số','Cửa hàng','Tỉnh','Kênh 1','Kênh 2','Kênh 3','Kênh 4','Hoạt động','Trạng thái'],
+      ...rows.map(r => [
+        r.bienSo, r.cuaHang||'', r.tinhMoi||'',
+        r.kenh1||'', r.kenh2||'', r.kenh3||'', r.kenh4||'',
+        r.active, r.status
+      ])
+    ]
+    const ws1 = XLSX.utils.aoa_to_sheet(data)
+    ws1['!cols'] = [10,20,15,12,12,12,12,8,20].map(w => ({wch:w}))
+    XLSX.utils.book_append_sheet(wb, ws1, 'Tất cả xe')
+
+    // Sheet 2: Cần kiểm tra
+    const warning = rows.filter(r => !r.ok)
+    if (warning.length) {
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        ['Xe cần kiểm tra camera'],
+        [],
+        ['Biển số','Cửa hàng','Tỉnh','Kênh 1','Kênh 2','Kênh 3','Kênh 4','Hoạt động','Trạng thái'],
+        ...warning.map(r => [r.bienSo, r.cuaHang||'', r.tinhMoi||'',
+          r.kenh1||'', r.kenh2||'', r.kenh3||'', r.kenh4||'', r.active, r.status])
+      ])
+      XLSX.utils.book_append_sheet(wb, ws2, 'Cần kiểm tra')
+    }
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    const filename = `camera_report_${new Date().toISOString().slice(0,10)}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buf)
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ══════════════════════════════════════════════════════════
+// GET /api/gps/gps-excel-export — Xuất báo cáo GPS time ra Excel
+// ══════════════════════════════════════════════════════════
+router.get('/gps-excel-export', async (req, res) => {
+  try {
+    const statusCol = mongoose.connection.db.collection('gps_status')
+    const xetaiCol  = mongoose.connection.db.collection('xetai')
+    const kmCol     = mongoose.connection.db.collection('gps_km_history')
+
+    const since30 = new Date()
+    since30.setDate(since30.getDate() - 30)
+    const since30Str = since30.toISOString().split('T')[0]
+
+    const [vehicles, kmDocs] = await Promise.all([
+      statusCol.find({}).toArray(),
+      kmCol.find({ date: { $gte: since30Str } }).toArray()
+    ])
+
+    // Build km history map
+    const kmHistory = new Map()
+    for (const r of kmDocs) {
+      if (!kmHistory.has(r.plateRaw)) kmHistory.set(r.plateRaw, [])
+      kmHistory.get(r.plateRaw).push({ date: r.date, km: r.totalKm })
+    }
+
+    // Load xetai để lấy cuaHang + tinhMoi
+    const allXe = await xetaiCol.find({}, {
+      projection: { 'BIỂN SỐ':1,'BIẼNSỐ':1,'Biển số':1,'Cưả hàng sử dụng':1,'Tỉnh mới':1 }
+    }).toArray()
+    const xeMap = new Map()
+    for (const xe of allXe) {
+      const bs = (xe['BIỂN SỐ']||xe['BIẼNSỐ']||xe['Biển số']||'').trim()
+      if (bs) xeMap.set(bs.replace(/[-\.]/g,'').toUpperCase(), {
+        cuaHang: xe['Cưả hàng sử dụng']||'', tinhMoi: xe['Tỉnh mới']||''
+      })
+    }
+
+    const enriched = vehicles.map(v => {
+      const gs      = calcGpsStatus(v, kmHistory)
+      const bsNorm  = (v.plateRaw||'').replace(/_[A-Z]$/,'').replace(/[-\.]/g,'').toUpperCase()
+      const xeInfo  = xeMap.get(bsNorm) || { cuaHang:'', tinhMoi:'' }
+      return { ...v, gpsStatus: gs, cuaHang: xeInfo.cuaHang, tinhMoi: xeInfo.tinhMoi }
+    })
+
+    const XLSX = require('xlsx')
+    const wb   = XLSX.utils.book_new()
+
+    const header = ['Biển số','Cửa hàng','Tỉnh','GPS Time','Ngày mất','Km hôm nay','Trạng thái GPS']
+    const wsData = [
+      ['Báo cáo GPS Time - ' + new Date().toLocaleString('vi-VN')],
+      [],
+      header,
+      ...enriched.map(v => [
+        (v.plateRaw||'').replace(/_[A-Z]$/,''),
+        v.cuaHang, v.tinhMoi,
+        v.gpsTime ? v.gpsTime.split('T')[0] : '',
+        v.gpsStatus?.daysSince != null ? v.gpsStatus.daysSince + ' ngày' : '',
+        v.totalKm || 0,
+        v.gpsStatus?.label || ''
+      ])
+    ]
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData)
+    ws['!cols'] = [14,20,15,12,10,12,25].map(w => ({wch:w}))
+    XLSX.utils.book_append_sheet(wb, ws, 'GPS Status')
+
+    // Sheet 2: chỉ xe có vấn đề
+    const issues = enriched.filter(v => v.gpsStatus?.code !== 'normal')
+    if (issues.length) {
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        ['Xe có vấn đề GPS'], [], header,
+        ...issues.map(v => [
+          (v.plateRaw||'').replace(/_[A-Z]$/,''), v.cuaHang, v.tinhMoi,
+          v.gpsTime ? v.gpsTime.split('T')[0] : '',
+          v.gpsStatus?.daysSince != null ? v.gpsStatus.daysSince + ' ngày' : '',
+          v.totalKm || 0, v.gpsStatus?.label || ''
+        ])
+      ])
+      XLSX.utils.book_append_sheet(wb, ws2, 'Có vấn đề')
+    }
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    const filename = `gps_report_${new Date().toISOString().slice(0,10)}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buf)
+  } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
 module.exports = router
