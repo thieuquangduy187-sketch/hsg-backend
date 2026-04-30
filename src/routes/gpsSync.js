@@ -83,37 +83,26 @@ function calcGpsStatus(vehicle, kmHistory) {
   // ── 4. Xác định trạng thái ───────────────────────────────
   const daysTracked = history.length
 
-  // ── Fix chính: kmTotal = 0 trong toàn bộ period có data ──
-  // GPS device vẫn ping nhưng xe không đi → gpsTime gần nhưng km=0
-  // Nếu có đủ 7+ ngày data mà km = 0 → xe dừng chắc chắn
-  if (kmTotal === 0 && daysTracked >= 7) {
-    // Số ngày dừng = max(stoppedDays, daysSince gpsTime)
+  // ── Fix chính: kmTotal = 0 → xe không đi km nào trong period ──
+  // GPS vẫn ping nhưng xe không di chuyển
+  if (kmTotal === 0) {
     const daysSinceGps = gpsTime
       ? Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
       : 0
-    // effectiveDays = max(stoppedDays từ flat line, daysSince gpsTime)
-    // KHÔNG dùng daysTracked (số ngày backfill) vì không phản ánh ngày dừng thực
+
+    // Số ngày dừng thực = max(flat line days, daysSince gpsTime)
+    // KHÔNG dùng daysTracked (chỉ là số ngày backfill, không phải ngày dừng)
     const effectiveDays = Math.max(stoppedDays, daysSinceGps)
-    return {
-      code:        'stopped',
-      label:       `Xe dừng hoạt động ${effectiveDays} ngày`,
-      color:       '#FF3B30',
-      stoppedDays: effectiveDays,
-      stoppedSince: gpsTime ? gpsTime.split('T')[0] : null,
-      kmTotal:     0,
-      kmPerDay:    0
-    }
-  }
-  // Fallback: kmTotal=0 nhưng chưa đủ 7 ngày data → dùng gpsTime
-  if (kmTotal === 0 && gpsTime) {
-    const daysSinceGps = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
-    if (daysSinceGps > 7) {
+
+    // Chỉ báo stopped khi effectiveDays > 7
+    // (tránh báo sai khi xe chỉ dừng 1-2 ngày cuối tuần)
+    if (effectiveDays > 7) {
       return {
         code:        'stopped',
-        label:       `Xe dừng hoạt động ${daysSinceGps} ngày`,
+        label:       `Xe dừng hoạt động ${effectiveDays} ngày`,
         color:       '#FF3B30',
-        stoppedDays: daysSinceGps,
-        stoppedSince: gpsTime.split('T')[0],
+        stoppedDays: effectiveDays,
+        stoppedSince: gpsTime ? gpsTime.split('T')[0] : null,
         kmTotal:     0,
         kmPerDay:    0
       }
