@@ -27,32 +27,65 @@ async function binahCall(path, body, token) {
   return res.json()
 }
 
-// ── GPS Status Logic ────────────────────────────────────────
+// ── GPS Status Logic (dùng previousKm từ chart endpoint) ────
+// kmHistory: Map { plateRaw → [{ date, previousKm, kmToday }] }
+// Logic: previousKm không tăng giữa các ngày liên tiếp → xe dừng
 function calcGpsStatus(vehicle, kmHistory) {
-  const gpsTime = vehicle.gpsTime
-  if (!gpsTime) return { code: 'no_signal', label: 'Không có tín hiệu', color: '#8E8E93' }
+  const history = (kmHistory.get(vehicle.plateRaw) || [])
+    .filter(r => r.previousKm != null)
+    .sort((a, b) => a.date < b.date ? -1 : 1) // sort ASC by date
 
-  const gpsDate   = new Date(gpsTime.split('T')[0])
-  const today     = new Date(new Date().toISOString().split('T')[0])
-  const daysSince = Math.floor((today - gpsDate) / (1000 * 60 * 60 * 24))
+  const today    = new Date().toISOString().split('T')[0]
+  const gpsTime  = vehicle.gpsTime
 
-  const history = kmHistory.get(vehicle.plateRaw) || []
-  const sumKm = (daysBack) => {
-    const from = new Date(gpsDate); from.setDate(from.getDate() - daysBack)
-    const fromStr = from.toISOString().split('T')[0]
-    const toStr   = gpsDate.toISOString().split('T')[0]
-    return history.filter(r => r.date >= fromStr && r.date <= toStr)
-      .reduce((acc, r) => acc + (r.km || 0), 0)
+  // ── Nếu không có km history → fallback sang daysSince ────
+  if (!history.length) {
+    if (!gpsTime) return { code: 'no_data', label: 'Không có dữ liệu', color: '#8E8E93' }
+    const gpsDate   = new Date(gpsTime.split('T')[0])
+    const todayDate = new Date(today)
+    const daysSince = Math.floor((todayDate - gpsDate) / (1000 * 60 * 60 * 24))
+    if (daysSince >= 3)
+      return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0] }
+    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: 0 }
   }
 
-  if (daysSince >= 3 && daysSince <= 4 && sumKm(15) > 600)
-    return { code: 'gps_lost_active', label: 'Mất tín hiệu GPS (xe vẫn HĐ)', color: '#FF9500', daysSince, km15: sumKm(15) }
-  if (daysSince > 4 && sumKm(15) < 50)
-    return { code: 'stopped', label: 'Xe dừng hoạt động', color: '#FF3B30', daysSince, km15: sumKm(15) }
-  if (daysSince < 2 && sumKm(30) < 50)
-    return { code: 'stopped', label: 'Xe dừng hoạt động', color: '#FF3B30', daysSince, km30: sumKm(30) }
+  // ── Tính km mỗi ngày = previousKm[hôm nay] - previousKm[hôm qua] ─
+  // Nếu delta == 0 → xe không đi ngày đó
+  let stoppedDays = 0
+  let stoppedSince = null
 
-  return { code: 'normal', label: 'Bình thường', color: '#34C759', daysSince }
+  // Đi từ ngày gần nhất trở về trước
+  for (let i = history.length - 1; i >= 1; i--) {
+    const curr = history[i]
+    const prev = history[i - 1]
+    const delta = (curr.previousKm || 0) - (prev.previousKm || 0)
+
+    if (delta <= 0.5) {
+      // Xe không đi ngày này (delta <= 0.5 km để bỏ qua nhiễu GPS nhỏ)
+      stoppedDays++
+      stoppedSince = curr.date
+    } else {
+      // Xe có di chuyển → dừng đếm
+      break
+    }
+  }
+
+  // Km lũy kế đến hiện tại = km của ngày gần nhất
+  const latestKm = history[history.length - 1]?.previousKm || 0
+
+  if (stoppedDays === 0) {
+    return {
+      code: 'normal', label: 'Bình thường', color: '#34C759',
+      stoppedDays: 0, kmTotal: latestKm
+    }
+  }
+
+  return {
+    code: 'stopped',
+    label: `Xe dừng hoạt động ${stoppedDays} ngày`,
+    color: '#FF3B30',
+    stoppedDays, stoppedSince, kmTotal: latestKm
+  }
 }
 
 // ── Camera Status Logic ─────────────────────────────────────
@@ -163,7 +196,11 @@ router.get('/status', async (req, res) => {
     const kmHistory = new Map()
     for (const r of kmDocs) {
       if (!kmHistory.has(r.plateRaw)) kmHistory.set(r.plateRaw, [])
-      kmHistory.get(r.plateRaw).push({ date:r.date, km:r.totalKm })
+      kmHistory.get(r.plateRaw).push({
+        date:       r.date,
+        previousKm: r.previousKm ?? r.totalKm ?? null,  // từ backfill mới
+        kmToday:    r.kmToday ?? 0
+      })
     }
     const xeMap = await loadXeMap()
     const enriched = vehicles.map(v => {
@@ -177,8 +214,8 @@ router.get('/status', async (req, res) => {
       total:    enriched.length,
       online:   enriched.filter(v=>v.isOnline).length,
       offline:  enriched.filter(v=>!v.isOnline).length,
-      gpsLost:  enriched.filter(v=>v.gpsStatus.code==='gps_lost_active').length,
       stopped:  enriched.filter(v=>v.gpsStatus.code==='stopped').length,
+      normal:   enriched.filter(v=>v.gpsStatus.code==='normal').length,
       camPartial: enriched.filter(v=>v.camStatus.code==='partial').length,
       camLostAll: enriched.filter(v=>v.camStatus.code==='lost_all').length,
     }
@@ -358,18 +395,36 @@ router.post('/backfill-history', async (req, res) => {
               {vehicleId:v.vehicleId,fromDate:fromStr,toDate:toStr,numberRow:2000,getAddress:false},token)
             const points=Array.isArray(data)?data:(data?.data||data?.result||[])
             if (!points.length){done++;return}
-            const byDay={}
+            // Group by day, lấy previousKm cuối cùng của mỗi ngày
+            // previousKm = km tích lũy đến đầu ngày đó (dùng để so sánh ngày này vs ngày trước)
+            const byDay = {}
             for (const p of points) {
-              if (!p.dateTime||p.km==null) continue
-              const day=p.dateTime.split('T')[0]
-              if (!byDay[day]) byDay[day]=[]
-              byDay[day].push(parseFloat(p.km||0))
+              if (!p.dateTime) continue
+              const day = p.dateTime.split('T')[0]
+              if (!byDay[day]) byDay[day] = { kms: [], prevKms: [] }
+              if (p.km != null)         byDay[day].kms.push(parseFloat(p.km))
+              if (p.previousKm != null) byDay[day].prevKms.push(parseFloat(p.previousKm))
             }
-            const ops=Object.entries(byDay).map(([date,kms])=>({
-              updateOne:{ filter:{plateRaw:v.plateRaw,date},
-                update:{$set:{plateRaw:v.plateRaw,date,totalKm:Math.max(0,parseFloat((Math.max(...kms)-Math.min(...kms)).toFixed(2))),source:'backfill'}},
-                upsert:true }
-            }))
+            const ops = Object.entries(byDay).map(([date, d]) => {
+              const maxKm    = d.kms.length      ? Math.max(...d.kms)     : 0
+              const prevKm   = d.prevKms.length  ? Math.max(...d.prevKms) : maxKm
+              // kmToday = max km ngày đó - previousKm (km thực đi trong ngày)
+              const kmToday  = Math.max(0, parseFloat((maxKm - prevKm).toFixed(2)))
+              return {
+                updateOne: {
+                  filter: { plateRaw: v.plateRaw, date },
+                  update: { $set: {
+                    plateRaw:   v.plateRaw,
+                    date,
+                    previousKm: prevKm,   // km tích lũy đầu ngày → dùng để detect stopped
+                    kmToday,              // km thực đi trong ngày
+                    totalKm:    kmToday,  // backward compat
+                    source:     'backfill'
+                  }},
+                  upsert: true
+                }
+              }
+            })
             if (ops.length) await db().collection('gps_km_history').bulkWrite(ops)
             done++
           } catch(e){console.error('[Backfill]',v.plateRaw,e.message);errors++}
