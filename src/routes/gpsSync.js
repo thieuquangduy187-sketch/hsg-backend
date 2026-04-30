@@ -44,9 +44,9 @@ function calcGpsStatus(vehicle, kmHistory) {
     const gpsDate   = new Date(gpsTime.split('T')[0])
     const todayDate = new Date(today)
     const daysSince = Math.floor((todayDate - gpsDate) / (1000 * 60 * 60 * 24))
-    if (daysSince >= 3)
+    if (daysSince > 3)
       return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0] }
-    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: 0 }
+    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: daysSince }
   }
 
   // ── Tính km mỗi ngày = previousKm[hôm nay] - previousKm[hôm qua] ─
@@ -73,13 +73,15 @@ function calcGpsStatus(vehicle, kmHistory) {
   // Km lũy kế đến hiện tại = km của ngày gần nhất
   const latestKm = history[history.length - 1]?.previousKm || 0
 
-  if (stoppedDays === 0) {
+  if (stoppedDays <= 3) {
+    // <= 3 ngày: tài xế nghỉ phép / sửa chữa ngắn → bình thường
     return {
       code: 'normal', label: 'Bình thường', color: '#34C759',
-      stoppedDays: 0, kmTotal: latestKm
+      stoppedDays, kmTotal: latestKm
     }
   }
 
+  // > 3 ngày: cảnh báo dừng hoạt động
   return {
     code: 'stopped',
     label: `Xe dừng hoạt động ${stoppedDays} ngày`,
@@ -226,13 +228,21 @@ router.get('/status', async (req, res) => {
 // ── GET /camera-status ─────────────────────────────────────
 router.get('/camera-status', async (req, res) => {
   try {
-    const [rows, lastSync] = await Promise.all([
+    const [rows, lastSync, xeMap] = await Promise.all([
       db().collection('camera_status').find({}).sort({ bienSo:1 }).toArray(),
-      db().collection('gps_config').findOne({ key:'last_camera_sync' })
+      db().collection('gps_config').findOne({ key:'last_camera_sync' }),
+      loadXeMap()  // luôn lấy fresh từ xetai
     ])
-    const total = rows.length, ok = rows.filter(r=>r.ok).length
-    res.json({ lastSync: lastSync?.valueVN||lastSync?.value||null,
-      total, ok, warning: total-ok, rows })
+    // Enrich với cuaHang/tinhMoi mới nhất từ xetai
+    const enriched = rows.map((r, idx) => {
+      const xeInfo = xeMap.get(r.bienSo?.toUpperCase()) || { cuaHang: r.cuaHang||'', tinhMoi: r.tinhMoi||'' }
+      return { ...r, stt: idx + 1, cuaHang: xeInfo.cuaHang, tinhMoi: xeInfo.tinhMoi }
+    })
+    const total = enriched.length, ok = enriched.filter(r=>r.ok).length
+    res.json({
+      lastSync: lastSync?.valueVN || lastSync?.value || null,
+      total, ok, warning: total - ok, rows: enriched
+    })
   } catch(e) { res.status(500).json({ error:e.message }) }
 })
 
