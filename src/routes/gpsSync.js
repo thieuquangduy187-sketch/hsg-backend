@@ -5,6 +5,7 @@ const router   = require('express').Router()
 const mongoose = require('mongoose')
 
 const BINHANH_BASE = 'https://gps3.binhanh.vn/api/v1'
+const { binahLogin, syncCameraStatus, saveToken } = require('../binahDownloader')
 
 // ── Helper: lấy token ─────────────────────────────────────
 async function getToken() {
@@ -95,6 +96,39 @@ function calcCamStatus(vehicle) {
   if (lost >= camCount) return { code: 'lost_all', label: `Mất hết ${camCount} cam`,     color: '#FF3B30', active, total: camCount }
   return                       { code: 'partial',  label: `Mất ${lost}/${camCount} cam`, color: '#FF9500', active, total: camCount }
 }
+
+// ── POST /api/gps/auto-login — tự login lấy token mới ────
+router.post('/auto-login', async (req, res) => {
+  try {
+    const token = await binahLogin()
+    await saveToken(token)
+    res.json({ success: true, message: 'Đã login và lưu token mới' })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── POST /api/gps/sync-camera — download + parse Excel camera
+router.post('/sync-camera', async (req, res) => {
+  try {
+    const result = await syncCameraStatus()
+    res.json(result)
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── GET /api/gps/camera-status — lấy data từ camera_status collection
+router.get('/camera-status', async (req, res) => {
+  try {
+    const col      = mongoose.connection.db.collection('camera_status')
+    const cfgCol   = mongoose.connection.db.collection('gps_config')
+    const [rows, lastSync] = await Promise.all([
+      col.find({}).sort({ bienSo: 1 }).toArray(),
+      cfgCol.findOne({ key: 'last_camera_sync' })
+    ])
+    const total   = rows.length
+    const ok      = rows.filter(r => r.ok).length
+    const warning = rows.filter(r => !r.ok).length
+    res.json({ lastSync: lastSync?.value, total, ok, warning, rows })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
 
 // ── POST /api/gps/set-token ────────────────────────────────
 router.post('/set-token', async (req, res) => {
