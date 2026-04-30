@@ -548,5 +548,67 @@ async function syncGPS() {
   return { success: true, total: vehicles.length, online, offline: vehicles.length - online }
 }
 
+
+// ══════════════════════════════════════════════════════════
+// POST /api/gps/upload-camera-excel
+// Nhận base64 Excel từ frontend interceptor → parse → lưu DB
+// ══════════════════════════════════════════════════════════
+router.post('/upload-camera-excel', async (req, res) => {
+  try {
+    const { data, size } = req.body
+    if (!data) return res.status(400).json({ error: 'Thiếu data' })
+
+    const buf = Buffer.from(data, 'base64')
+    console.log('[CameraExcel] Received buffer size:', buf.length)
+
+    // Parse Excel dùng xlsx package (đã có sẵn)
+    const XLSX = require('xlsx')
+    const wb   = XLSX.read(buf, { type: 'buffer' })
+    const ws   = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    // Tìm header row
+    const headerIdx = rows.findIndex(r => r[0] === 'STT' || r[1] === 'Phương tiện')
+    if (headerIdx < 0) return res.status(400).json({ error: 'Không tìm thấy header row', totalRows: rows.length, sample: rows.slice(0, 5) })
+
+    // Parse data rows
+    const parsed = []
+    for (const row of rows.slice(headerIdx + 1)) {
+      if (!row[0] || !row[1]) continue
+      const kenh = [row[2]||'', row[3]||'', row[4]||'', row[5]||'']
+      const active = kenh.filter(k => k === 'Hoạt động').length
+      parsed.push({
+        stt:    parseInt(row[0]) || 0,
+        bienSo: row[1],
+        kenh1: kenh[0], kenh2: kenh[1], kenh3: kenh[2], kenh4: kenh[3],
+        active, ok: active >= 2,
+        status: active >= 2 ? 'Bình thường' : active === 0 ? 'Mất hết cam' : `Cần kiểm tra (${active} kênh)`
+      })
+    }
+
+    if (!parsed.length) return res.status(400).json({ error: 'Không parse được data', headerIdx, totalRows: rows.length })
+
+    // Lưu vào DB
+    const col = mongoose.connection.db.collection('camera_status')
+    const now = new Date()
+    await col.deleteMany({})
+    await col.insertMany(parsed.map(r => ({ ...r, syncedAt: now })))
+    await mongoose.connection.db.collection('gps_config').updateOne(
+      { key: 'last_camera_sync' },
+      { $set: { key: 'last_camera_sync', value: now.toISOString(),
+        total: parsed.length, ok: parsed.filter(r=>r.ok).length,
+        warning: parsed.filter(r=>!r.ok).length }},
+      { upsert: true }
+    )
+
+    res.json({ success: true, total: parsed.length,
+      ok: parsed.filter(r=>r.ok).length,
+      warning: parsed.filter(r=>!r.ok).length })
+  } catch(e) {
+    console.error('[CameraExcel] Error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 module.exports = router
 module.exports.syncGPS = syncGPS
