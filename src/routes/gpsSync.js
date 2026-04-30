@@ -81,23 +81,41 @@ function calcGpsStatus(vehicle, kmHistory) {
   const kmTotal  = Math.max(0, kmLast - kmFirst)
 
   // ── 4. Xác định trạng thái ───────────────────────────────
-  // Ưu tiên: stopped > low_activity > normal
+  const daysTracked = history.length
+
+  // Fix: nếu toàn bộ km = 0 → xe không có data thực
+  // Dùng gpsTime để tính daysSince thật
+  if (kmTotal === 0 && gpsTime) {
+    const daysSinceGps = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
+    if (daysSinceGps > 7) {
+      return {
+        code:        'stopped',
+        label:       `Xe dừng hoạt động ${daysSinceGps} ngày`,
+        color:       '#FF3B30',
+        stoppedDays: daysSinceGps,
+        stoppedSince: gpsTime.split('T')[0],
+        kmTotal:     0,
+        kmPerDay:    0
+      }
+    }
+  }
+
+  // Ưu tiên: stopped (flat line) > low_activity > normal
   if (stoppedDays > 7) {
     return {
       code:        'stopped',
       label:       `Xe dừng hoạt động ${stoppedDays} ngày`,
       color:       '#FF3B30',
       stoppedDays, stoppedSince, kmTotal,
-      // Km trung bình/ngày trước khi dừng (để đánh giá mức độ hoạt động)
-      kmPerDay: history.length > 1 ? Math.round(kmTotal / (history.length - stoppedDays)) : 0
+      kmPerDay: (daysTracked - stoppedDays) > 0
+        ? Math.round(kmTotal / (daysTracked - stoppedDays))
+        : 0
     }
   }
 
   // Xe có chạy nhưng km/tháng quá thấp → hoạt động rất ít
-  // Ngưỡng: < 1000km/tháng (30 ngày)
-  const daysTracked = history.length
-  const kmThreshold = Math.round(1000 * daysTracked / 30) // tỷ lệ theo số ngày có data
-  if (kmTotal < kmThreshold && kmTotal < 1000 && daysTracked >= 7) {
+  const kmThreshold = Math.round(1000 * daysTracked / 30)
+  if (kmTotal > 0 && kmTotal < kmThreshold && kmTotal < 1000 && daysTracked >= 7) {
     return {
       code:    'low_activity',
       label:   `Hoạt động rất ít (${kmTotal} km/${daysTracked} ngày)`,
