@@ -27,66 +27,92 @@ async function binahCall(path, body, token) {
   return res.json()
 }
 
-// ── GPS Status Logic (dùng previousKm từ chart endpoint) ────
-// kmHistory: Map { plateRaw → [{ date, previousKm, kmToday }] }
-// Logic: previousKm không tăng giữa các ngày liên tiếp → xe dừng
+// ══════════════════════════════════════════════════════════
+// GPS STATUS — Thuật toán phát hiện xe dừng hoạt động
+// Dựa trên previousKm từ /temperature-report/temperature/chart
+//
+// previousKm = km tích lũy đến đầu ngày đó
+// Nếu previousKm[N] == previousKm[N-1] → xe không đi ngày N (flat line)
+//
+// 3 trạng thái:
+//   stopped      → dừng > 3 ngày liên tiếp (flat line streak)
+//   low_activity → tổng km/tháng < 1000km (hoạt động rất ít)
+//   normal       → bình thường
+// ══════════════════════════════════════════════════════════
 function calcGpsStatus(vehicle, kmHistory) {
-  const history = (kmHistory.get(vehicle.plateRaw) || [])
+  const raw = (kmHistory.get(vehicle.plateRaw) || [])
     .filter(r => r.previousKm != null)
-    .sort((a, b) => a.date < b.date ? -1 : 1) // sort ASC by date
+    .sort((a, b) => (a.date < b.date ? -1 : 1))
 
-  const today    = new Date().toISOString().split('T')[0]
-  const gpsTime  = vehicle.gpsTime
+  const today   = new Date().toISOString().split('T')[0]
+  const gpsTime = vehicle.gpsTime
 
-  // ── Nếu không có km history → fallback sang daysSince ────
-  if (!history.length) {
-    if (!gpsTime) return { code: 'no_data', label: 'Không có dữ liệu', color: '#8E8E93' }
-    const gpsDate   = new Date(gpsTime.split('T')[0])
-    const todayDate = new Date(today)
-    const daysSince = Math.floor((todayDate - gpsDate) / (1000 * 60 * 60 * 24))
+  // ── Fallback: không có km history → dùng gpsTime ─────────
+  if (!raw.length) {
+    if (!gpsTime) return { code: 'no_data', label: 'Không có dữ liệu', color: '#8E8E93', stoppedDays: 0 }
+    const daysSince = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
     if (daysSince > 3)
-      return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0] }
-    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: daysSince }
+      return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0], kmTotal: 0 }
+    return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: daysSince, kmTotal: 0 }
   }
 
-  // ── Tính km mỗi ngày = previousKm[hôm nay] - previousKm[hôm qua] ─
-  // Nếu delta == 0 → xe không đi ngày đó
+  // ── 1. Làm tròn previousKm về số nguyên ──────────────────
+  const history = raw.map(r => ({
+    date:   r.date,
+    prevKm: Math.round(r.previousKm)
+  }))
+
+  // ── 2. Đếm chuỗi ngày flat liên tiếp từ hôm nay trở về ──
   let stoppedDays = 0
   let stoppedSince = null
-
-  // Đi từ ngày gần nhất trở về trước
   for (let i = history.length - 1; i >= 1; i--) {
-    const curr = history[i]
-    const prev = history[i - 1]
-    const delta = (curr.previousKm || 0) - (prev.previousKm || 0)
-
-    if (delta <= 0.5) {
-      // Xe không đi ngày này (delta <= 0.5 km để bỏ qua nhiễu GPS nhỏ)
+    const delta = history[i].prevKm - history[i - 1].prevKm
+    if (delta === 0) {
       stoppedDays++
-      stoppedSince = curr.date
+      stoppedSince = history[i].date
     } else {
-      // Xe có di chuyển → dừng đếm
-      break
+      break // xe có di chuyển → dừng đếm
     }
   }
 
-  // Km lũy kế đến hiện tại = km của ngày gần nhất
-  const latestKm = history[history.length - 1]?.previousKm || 0
+  // ── 3. Tổng km trong kỳ = prevKm[cuối] - prevKm[đầu] ────
+  const kmFirst  = history[0].prevKm
+  const kmLast   = history[history.length - 1].prevKm
+  const kmTotal  = Math.max(0, kmLast - kmFirst)
 
-  if (stoppedDays <= 3) {
-    // <= 3 ngày: tài xế nghỉ phép / sửa chữa ngắn → bình thường
+  // ── 4. Xác định trạng thái ───────────────────────────────
+  // Ưu tiên: stopped > low_activity > normal
+  if (stoppedDays > 3) {
     return {
-      code: 'normal', label: 'Bình thường', color: '#34C759',
-      stoppedDays, kmTotal: latestKm
+      code:        'stopped',
+      label:       `Xe dừng hoạt động ${stoppedDays} ngày`,
+      color:       '#FF3B30',
+      stoppedDays, stoppedSince, kmTotal,
+      // Km trung bình/ngày trước khi dừng (để đánh giá mức độ hoạt động)
+      kmPerDay: history.length > 1 ? Math.round(kmTotal / (history.length - stoppedDays)) : 0
     }
   }
 
-  // > 3 ngày: cảnh báo dừng hoạt động
+  // Xe có chạy nhưng km/tháng quá thấp → hoạt động rất ít
+  // Ngưỡng: < 1000km/tháng (30 ngày)
+  const daysTracked = history.length
+  const kmThreshold = Math.round(1000 * daysTracked / 30) // tỷ lệ theo số ngày có data
+  if (kmTotal < kmThreshold && kmTotal < 1000 && daysTracked >= 7) {
+    return {
+      code:    'low_activity',
+      label:   `Hoạt động rất ít (${kmTotal} km/${daysTracked} ngày)`,
+      color:   '#FF9500',
+      stoppedDays, kmTotal,
+      kmPerDay: daysTracked > 0 ? Math.round(kmTotal / daysTracked) : 0
+    }
+  }
+
   return {
-    code: 'stopped',
-    label: `Xe dừng hoạt động ${stoppedDays} ngày`,
-    color: '#FF3B30',
-    stoppedDays, stoppedSince, kmTotal: latestKm
+    code:     'normal',
+    label:    'Bình thường',
+    color:    '#34C759',
+    stoppedDays, kmTotal,
+    kmPerDay: daysTracked > 0 ? Math.round(kmTotal / daysTracked) : 0
   }
 }
 
@@ -213,13 +239,14 @@ router.get('/status', async (req, res) => {
       return { ...v, gpsStatus, camStatus, cuaHang:xeInfo.cuaHang, tinhMoi:xeInfo.tinhMoi }
     })
     const s = {
-      total:    enriched.length,
-      online:   enriched.filter(v=>v.isOnline).length,
-      offline:  enriched.filter(v=>!v.isOnline).length,
-      stopped:  enriched.filter(v=>v.gpsStatus.code==='stopped').length,
-      normal:   enriched.filter(v=>v.gpsStatus.code==='normal').length,
-      camPartial: enriched.filter(v=>v.camStatus.code==='partial').length,
-      camLostAll: enriched.filter(v=>v.camStatus.code==='lost_all').length,
+      total:       enriched.length,
+      online:      enriched.filter(v=>v.isOnline).length,
+      offline:     enriched.filter(v=>!v.isOnline).length,
+      stopped:     enriched.filter(v=>v.gpsStatus.code==='stopped').length,
+      lowActivity: enriched.filter(v=>v.gpsStatus.code==='low_activity').length,
+      normal:      enriched.filter(v=>v.gpsStatus.code==='normal').length,
+      camPartial:  enriched.filter(v=>v.camStatus.code==='partial').length,
+      camLostAll:  enriched.filter(v=>v.camStatus.code==='lost_all').length,
     }
     res.json({ vehicles:enriched, lastSync:lastSync?.value||null, summary:s })
   } catch(e) { res.status(500).json({ error:e.message }) }
@@ -363,6 +390,26 @@ router.get('/gps-excel-export', async (req, res) => {
   } catch(e) { res.status(500).json({ error:e.message }) }
 })
 
+
+// ── GET /api/gps/vehicle-history/:plateRaw ─────────────────
+// Trả về km history 30 ngày để vẽ sparkline chart
+router.get('/vehicle-history/:plateRaw', async (req, res) => {
+  try {
+    const { plateRaw } = req.params
+    const since30 = new Date(); since30.setDate(since30.getDate() - 30)
+    const docs = await db().collection('gps_km_history').find({
+      plateRaw,
+      date: { $gte: since30.toISOString().split('T')[0] }
+    }).sort({ date: 1 }).toArray()
+
+    const data = docs.map(d => ({
+      date:      d.date,
+      prevKm:    Math.round(d.previousKm || 0),
+      kmToday:   Math.round(d.kmToday || 0)
+    }))
+    res.json({ plateRaw, data })
+  } catch(e) { res.status(500).json({ error: e.message }) }
+})
 // ── Debug routes ───────────────────────────────────────────
 router.get('/debug-raw', async (req, res) => {
   try {
@@ -419,14 +466,14 @@ router.post('/backfill-history', async (req, res) => {
               const maxKm    = d.kms.length      ? Math.max(...d.kms)     : 0
               const prevKm   = d.prevKms.length  ? Math.max(...d.prevKms) : maxKm
               // kmToday = max km ngày đó - previousKm (km thực đi trong ngày)
-              const kmToday  = Math.max(0, parseFloat((maxKm - prevKm).toFixed(2)))
+              const kmToday  = Math.max(0, Math.round(maxKm - prevKm))
               return {
                 updateOne: {
                   filter: { plateRaw: v.plateRaw, date },
                   update: { $set: {
                     plateRaw:   v.plateRaw,
                     date,
-                    previousKm: prevKm,   // km tích lũy đầu ngày → dùng để detect stopped
+                    previousKm: Math.round(prevKm),   // làm tròn integer
                     kmToday,              // km thực đi trong ngày
                     totalKm:    kmToday,  // backward compat
                     source:     'backfill'
