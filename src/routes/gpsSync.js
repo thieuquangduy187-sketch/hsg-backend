@@ -91,7 +91,9 @@ function calcGpsStatus(vehicle, kmHistory) {
     const daysSinceGps = gpsTime
       ? Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
       : 0
-    const effectiveDays = Math.max(stoppedDays, daysSinceGps, daysTracked)
+    // effectiveDays = max(stoppedDays từ flat line, daysSince gpsTime)
+    // KHÔNG dùng daysTracked (số ngày backfill) vì không phản ánh ngày dừng thực
+    const effectiveDays = Math.max(stoppedDays, daysSinceGps)
     return {
       code:        'stopped',
       label:       `Xe dừng hoạt động ${effectiveDays} ngày`,
