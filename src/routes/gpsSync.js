@@ -83,8 +83,26 @@ function calcGpsStatus(vehicle, kmHistory) {
   // ── 4. Xác định trạng thái ───────────────────────────────
   const daysTracked = history.length
 
-  // Fix: nếu toàn bộ km = 0 → xe không có data thực
-  // Dùng gpsTime để tính daysSince thật
+  // ── Fix chính: kmTotal = 0 trong toàn bộ period có data ──
+  // GPS device vẫn ping nhưng xe không đi → gpsTime gần nhưng km=0
+  // Nếu có đủ 7+ ngày data mà km = 0 → xe dừng chắc chắn
+  if (kmTotal === 0 && daysTracked >= 7) {
+    // Số ngày dừng = max(stoppedDays, daysSince gpsTime)
+    const daysSinceGps = gpsTime
+      ? Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
+      : 0
+    const effectiveDays = Math.max(stoppedDays, daysSinceGps, daysTracked)
+    return {
+      code:        'stopped',
+      label:       `Xe dừng hoạt động ${effectiveDays} ngày`,
+      color:       '#FF3B30',
+      stoppedDays: effectiveDays,
+      stoppedSince: gpsTime ? gpsTime.split('T')[0] : null,
+      kmTotal:     0,
+      kmPerDay:    0
+    }
+  }
+  // Fallback: kmTotal=0 nhưng chưa đủ 7 ngày data → dùng gpsTime
   if (kmTotal === 0 && gpsTime) {
     const daysSinceGps = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
     if (daysSinceGps > 7) {
