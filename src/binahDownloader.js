@@ -22,10 +22,6 @@ async function binahLogin() {
     })
   })
   // Log TẤT CẢ response headers
-  console.log('[binahLogin] Status:', res.status)
-  const allHeaders = {}
-  res.headers.forEach((v, k) => { allHeaders[k] = v })
-  console.log('[binahLogin] ALL Headers:', JSON.stringify(allHeaders))
   const contentType = res.headers.get('content-type') || ''
   
   // Đọc raw text trước
@@ -52,37 +48,13 @@ async function binahLogin() {
     throw new Error('Response not JSON: ' + rawText.slice(0, 100))
   }
   
-  // data.data là object với keys số → đây là Uint8Array/Buffer bị JSON.parse
-  // Convert về string
-  if (data?.data && typeof data.data === 'object' && '0' in data.data) {
-    const bytes = Object.values(data.data)
-    const str = Buffer.from(bytes).toString('utf8')
-    console.log('[binahLogin] Decoded buffer string (first 300):', str.slice(0, 300))
-    // String này có thể là JWT hoặc JSON chứa token
-    if (str.startsWith('eyJ')) return str.trim()
-    try {
-      const inner = JSON.parse(str)
-      const t = inner?.token || inner?.accessToken || inner?.jwtToken || inner?.data?.token
-      if (t) return t
-      console.log('[binahLogin] Inner JSON keys:', Object.keys(inner))
-    } catch(e) {}
-  }
-  
-  const token = data?.data?.token || data?.data?.accessToken
+  // Token nằm ở data.data[9] (protobuf-like format của Binhanh)
+  const token = data?.data?.[9]
+    || data?.data?.token || data?.data?.accessToken
     || data?.token || data?.accessToken
-    || (typeof data?.data === 'string' && data.data.startsWith('eyJ') ? data.data : null)
   
   if (!token) {
-    // In toàn bộ data.data để phân tích
-    const d = data?.data || {}
-    const allKeys = Object.keys(d).sort((a,b) => parseInt(a)-parseInt(b))
-    console.log('[binahLogin] data.data all keys:', allKeys.join(','))
-    // In value của từng key (không phải array)
-    allKeys.forEach(k => {
-      const v = d[k]
-      if (!Array.isArray(v)) console.log(`[binahLogin] data.data[${k}] =`, JSON.stringify(v).slice(0, 100))
-    })
-    throw new Error('Login failed - token not found')
+      throw new Error('Login failed: token not found at data.data[9]')
   }
   return token
 }
