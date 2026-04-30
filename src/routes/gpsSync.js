@@ -380,56 +380,87 @@ router.get('/debug-raw', async (req, res) => {
 
 
 // ══════════════════════════════════════════════════════════
-// GET /api/gps/camera-report — Xuất báo cáo camera dạng JSON
-// Logic: tổng kênh "Hoạt động" >= 2 → cam OK
+// GET /api/gps/camera-report — Báo cáo camera từ Binhanh
+// Gọi /api/v1/image/latest-by-channel với tất cả xe+kênh
+// Logic: kênh có URL ảnh (field "u") → Hoạt động
+//        Tổng kênh hoạt động >= 2 → Bình thường
 // ══════════════════════════════════════════════════════════
 router.get('/camera-report', async (req, res) => {
   try {
-    const col      = mongoose.connection.db.collection('gps_status')
-    const vehicles = await col.find({}).sort({ plateRaw: 1 }).toArray()
+    const token = await getToken()
+    if (!token) return res.status(400).json({ error: 'Chưa có token' })
 
-    const now   = new Date()
+    const col      = mongoose.connection.db.collection('gps_status')
+    const vehicles = await col.find(
+      { vehicleId: { $ne: null }, camCount: { $gt: 0 } }
+    ).sort({ plateRaw: 1 }).toArray()
+
+    if (!vehicles.length) return res.json({ error: 'Chưa có dữ liệu xe. Hãy Sync trước.' })
+
+    // Build vehicleChannels: [{vehicleId, channel}] cho tất cả xe
+    // Mỗi xe gửi camCount kênh (thường là 2, có xe 3-4)
+    const vehicleChannels = []
+    for (const v of vehicles) {
+      const count = Math.min(v.camCount || 2, 4) // tối đa 4 kênh
+      for (let ch = 1; ch <= count; ch++) {
+        vehicleChannels.push({ vehicleId: v.vehicleId, channel: ch })
+      }
+    }
+
+    // Gọi Binhanh API
+    const data = await binahCall('/image/latest-by-channel', {
+      languageId: 1,
+      vehicleChannels
+    }, token)
+
+    // data.data = { "29C93228_C": { "1": { u, k, ... }, "2": {...} }, ... }
+    const channelData = data?.data || {}
+
+    const now = new Date()
     const dateStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')} ${now.getDate()}/${now.getMonth()+1}/${now.getFullYear()}`
 
     const rows = vehicles.map((v, idx) => {
-      const cameras = v.cameras || []
-      const camCount = v.camCount || 0
+      const plate    = v.plateRaw || ''
+      const camCount = v.camCount || 2
+      const vData    = channelData[plate] || {}
 
-      // Kênh 1-4: "Hoạt động" nếu record=true, "Không hoạt động" nếu false, "" nếu không có cam
+      // Kênh 1-4: có URL ảnh (field "u") → Hoạt động
       const kenh = [1,2,3,4].map(ch => {
-        const cam = cameras.find(c => c.channel === ch)
-        if (!cam) return ''
-        return cam.record === true ? 'Hoạt động' : 'Không hoạt động'
+        if (ch > camCount) return '' // xe này không có kênh này
+        const chData = vData[String(ch)]
+        if (!chData) return 'Không hoạt động'
+        return chData.u ? 'Hoạt động' : 'Không hoạt động'
       })
 
-      const activeCount = cameras.filter(c => c.record === true).length
-      const status = camCount === 0 ? 'Không có cam'
-        : activeCount >= 2 ? 'Bình thường'
-        : activeCount === 0 ? 'Mất hết cam'
+      const activeCount = kenh.filter(k => k === 'Hoạt động').length
+      const status = activeCount >= 2       ? 'Bình thường'
+        : activeCount === 0                 ? 'Mất hết cam'
         : `Mất ${camCount - activeCount}/${camCount} cam`
 
       return {
-        stt:      idx + 1,
-        bienSo:   (v.plateRaw || '').replace(/_[A-Z]$/, ''),
-        kenh1:    kenh[0],
-        kenh2:    kenh[1],
-        kenh3:    kenh[2],
-        kenh4:    kenh[3],
-        active:   activeCount,
+        stt:    idx + 1,
+        bienSo: plate.replace(/_[A-Z]$/, ''),
+        kenh1:  kenh[0],
+        kenh2:  kenh[1],
+        kenh3:  kenh[2],
+        kenh4:  kenh[3],
+        active: activeCount,
         camCount,
         status,
-        ok:       activeCount >= 2
+        ok:     activeCount >= 2
       }
     })
 
-    // Summary
     const total   = rows.length
     const ok      = rows.filter(r => r.ok).length
-    const warning = rows.filter(r => !r.ok && r.camCount > 0).length
-    const noCam   = rows.filter(r => r.camCount === 0).length
+    const warning = rows.filter(r => !r.ok).length
 
-    res.json({ dateStr, total, ok, warning, noCam, rows })
-  } catch(e) { res.status(500).json({ error: e.message }) }
+    res.json({ dateStr, total, ok, warning, noCam: 0, rows })
+  } catch(e) {
+    if (e.message === 'TOKEN_EXPIRED')
+      return res.status(401).json({ error: 'Token hết hạn. Vui lòng cập nhật.' })
+    res.status(500).json({ error: e.message })
+  }
 })
 
 module.exports = router
