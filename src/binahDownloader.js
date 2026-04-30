@@ -21,27 +21,58 @@ async function binahLogin() {
       deviceID:   '87687f1f-4465-8024-f7ac-067a8befd10c',
     })
   })
-  const data = await res.json()
+  // Log response headers để debug
+  const contentType = res.headers.get('content-type') || ''
+  console.log('[binahLogin] Content-Type:', contentType)
+  console.log('[binahLogin] Status:', res.status)
   
-  // Log full response để debug (chỉ lần đầu)
-  console.log('[binahLogin] Response keys:', JSON.stringify(Object.keys(data?.data || data || {})).slice(0, 200))
+  // Đọc raw text trước
+  const rawText = await res.text()
+  console.log('[binahLogin] Raw response (first 300):', rawText.slice(0, 300))
   
-  // Binhanh trả về token trong nhiều format khác nhau
-  // Thử tất cả các path phổ biến
-  const token = data?.data?.token
-    || data?.data?.accessToken
-    || data?.data?.jwt
-    || data?.data?.jwtToken
-    || data?.accessToken
-    || data?.token
-    || data?.jwt
-    // Nếu data.data là string thì đó là token
-    || (typeof data?.data === 'string' ? data.data : null)
+  // Check headers for token
+  const headerToken = res.headers.get('authorization') 
+    || res.headers.get('x-token') 
+    || res.headers.get('token')
+  if (headerToken) {
+    console.log('[binahLogin] Token found in header!')
+    return headerToken.replace('Bearer ', '')
+  }
+  
+  // Parse JSON
+  let data
+  try { data = JSON.parse(rawText) } catch(e) {
+    // Không phải JSON — có thể raw text là token
+    if (rawText && rawText.startsWith('eyJ')) {
+      console.log('[binahLogin] Raw text is JWT token!')
+      return rawText.trim()
+    }
+    throw new Error('Response not JSON: ' + rawText.slice(0, 100))
+  }
+  
+  // data.data là object với keys số → đây là Uint8Array/Buffer bị JSON.parse
+  // Convert về string
+  if (data?.data && typeof data.data === 'object' && '0' in data.data) {
+    const bytes = Object.values(data.data)
+    const str = Buffer.from(bytes).toString('utf8')
+    console.log('[binahLogin] Decoded buffer string (first 300):', str.slice(0, 300))
+    // String này có thể là JWT hoặc JSON chứa token
+    if (str.startsWith('eyJ')) return str.trim()
+    try {
+      const inner = JSON.parse(str)
+      const t = inner?.token || inner?.accessToken || inner?.jwtToken || inner?.data?.token
+      if (t) return t
+      console.log('[binahLogin] Inner JSON keys:', Object.keys(inner))
+    } catch(e) {}
+  }
+  
+  const token = data?.data?.token || data?.data?.accessToken
+    || data?.token || data?.accessToken
+    || (typeof data?.data === 'string' && data.data.startsWith('eyJ') ? data.data : null)
   
   if (!token) {
-    // Log chi tiết để tìm field chứa token
-    console.log('[binahLogin] Full response:', JSON.stringify(data).slice(0, 500))
-    throw new Error('Login failed - cannot find token in response')
+    console.log('[binahLogin] Cannot find token. data keys:', Object.keys(data || {}))
+    throw new Error('Login failed - token not found')
   }
   return token
 }
