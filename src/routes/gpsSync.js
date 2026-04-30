@@ -590,12 +590,15 @@ router.post('/upload-camera-excel', async (req, res) => {
 
     // Lưu vào DB
     const col = mongoose.connection.db.collection('camera_status')
-    const now = new Date()
+    const now    = new Date()
+    // Lưu thời gian theo giờ Việt Nam (UTC+7)
+    const vnTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+    const vnStr  = vnTime.toISOString().replace('T',' ').replace('Z','').slice(0,19) + ' (GMT+7)'
     await col.deleteMany({})
-    await col.insertMany(parsed.map(r => ({ ...r, syncedAt: now })))
+    await col.insertMany(parsed.map(r => ({ ...r, syncedAt: now, syncedAtVN: vnStr })))
     await mongoose.connection.db.collection('gps_config').updateOne(
       { key: 'last_camera_sync' },
-      { $set: { key: 'last_camera_sync', value: now.toISOString(),
+      { $set: { key: 'last_camera_sync', value: now.toISOString(), valueVN: vnStr,
         total: parsed.length, ok: parsed.filter(r=>r.ok).length,
         warning: parsed.filter(r=>!r.ok).length }},
       { upsert: true }
