@@ -22,8 +22,27 @@ async function binahLogin() {
     })
   })
   const data = await res.json()
-  const token = data?.data?.token || data?.token || data?.accessToken
-  if (!token) throw new Error('Login failed: ' + JSON.stringify(data).slice(0, 200))
+  
+  // Log full response để debug (chỉ lần đầu)
+  console.log('[binahLogin] Response keys:', JSON.stringify(Object.keys(data?.data || data || {})).slice(0, 200))
+  
+  // Binhanh trả về token trong nhiều format khác nhau
+  // Thử tất cả các path phổ biến
+  const token = data?.data?.token
+    || data?.data?.accessToken
+    || data?.data?.jwt
+    || data?.data?.jwtToken
+    || data?.accessToken
+    || data?.token
+    || data?.jwt
+    // Nếu data.data là string thì đó là token
+    || (typeof data?.data === 'string' ? data.data : null)
+  
+  if (!token) {
+    // Log chi tiết để tìm field chứa token
+    console.log('[binahLogin] Full response:', JSON.stringify(data).slice(0, 500))
+    throw new Error('Login failed - cannot find token in response')
+  }
   return token
 }
 
