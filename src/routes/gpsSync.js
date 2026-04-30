@@ -497,4 +497,56 @@ router.get('/camera-report', async (req, res) => {
   }
 })
 
+// Export syncGPS function để internal route gọi trực tiếp
+async function syncGPS() {
+  const mongoose = require('mongoose')
+  const token = await getToken()
+  if (!token) throw new Error('Chưa có token')
+  const data = await binahCall('/vehicleonline/list', {
+    filterCondition: 5, hasPermissionAsAdmin: false,
+    skipVehiclePlateChanged: false, languageId: 1
+  }, token)
+  const vehicles = Array.isArray(data) ? data : (data?.data || data?.vehicles || [])
+  if (!vehicles.length) return { synced: 0 }
+  const now = new Date()
+  const today = now.toISOString().split('T')[0]
+  const statusCol = mongoose.connection.db.collection('gps_status')
+  const kmCol     = mongoose.connection.db.collection('gps_km_history')
+  const statusOps = vehicles.map(v => {
+    const plateRaw = v.vehiclePlate || v.plate || ''
+    const camCount = v.packageBAP?.serverServiceInfo?.camcount ?? v.serverServiceInfo?.camcount ?? v.camCount ?? 0
+    return {
+      updateOne: {
+        filter: { plateRaw },
+        update: { $set: {
+          plateRaw, vehicleId: v.vehicleId || v.id || null,
+          isOnline: v.isOnline ?? v.online ?? false,
+          totalKm:  parseFloat(v.totalKm || 0),
+          gpsTime:  v.gpsTime || null, camCount,
+          cameras:  v.cameraDevice?.cameras || v.cameras || [],
+          speed: v.speed || 0, lat: v.lat || null, lng: v.lng || null,
+          syncedAt: now, syncDate: today,
+        }}, upsert: true
+      }
+    }
+  })
+  const kmOps = vehicles.filter(v => v.vehiclePlate || v.plate).map(v => ({
+    updateOne: {
+      filter: { plateRaw: v.vehiclePlate || v.plate, date: today },
+      update: { $set: { plateRaw: v.vehiclePlate || v.plate, date: today, totalKm: parseFloat(v.totalKm || 0), recordedAt: now } },
+      upsert: true
+    }
+  }))
+  await statusCol.bulkWrite(statusOps)
+  if (kmOps.length) await kmCol.bulkWrite(kmOps)
+  const online = vehicles.filter(v => v.isOnline ?? v.online).length
+  await mongoose.connection.db.collection('gps_config').updateOne(
+    { key: 'last_sync' },
+    { $set: { key: 'last_sync', value: now.toISOString(), total: vehicles.length, online, offline: vehicles.length - online } },
+    { upsert: true }
+  )
+  return { success: true, total: vehicles.length, online, offline: vehicles.length - online }
+}
+
 module.exports = router
+module.exports.syncGPS = syncGPS
