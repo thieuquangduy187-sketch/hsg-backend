@@ -51,7 +51,7 @@ function calcGpsStatus(vehicle, kmHistory) {
   if (!raw.length) {
     if (!gpsTime) return { code: 'no_data', label: 'Không có dữ liệu', color: '#8E8E93', stoppedDays: 0 }
     const daysSince = Math.floor((new Date(today) - new Date(gpsTime.split('T')[0])) / 86400000)
-    if (daysSince > 3)
+    if (daysSince > 7)
       return { code: 'stopped', label: `Xe dừng hoạt động ${daysSince} ngày`, color: '#FF3B30', stoppedDays: daysSince, stoppedSince: gpsTime.split('T')[0], kmTotal: 0 }
     return { code: 'normal', label: 'Bình thường', color: '#34C759', stoppedDays: daysSince, kmTotal: 0 }
   }
@@ -82,7 +82,7 @@ function calcGpsStatus(vehicle, kmHistory) {
 
   // ── 4. Xác định trạng thái ───────────────────────────────
   // Ưu tiên: stopped > low_activity > normal
-  if (stoppedDays > 3) {
+  if (stoppedDays > 7) {
     return {
       code:        'stopped',
       label:       `Xe dừng hoạt động ${stoppedDays} ngày`,
