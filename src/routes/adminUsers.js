@@ -33,17 +33,25 @@ router.get('/users', async (req, res) => {
       User.countDocuments(filter),
     ])
 
+    const DEFAULT_PERMS = {
+      admin: require('../models/User').ALL_PERMISSIONS,
+      viewer: ['view_overview','view_xe_tai','view_oto_con','view_nhat_trinh','view_gia_dau','view_gps','view_chuyen_doi','view_bao_cao','view_hieu_qua','view_analyze'],
+      xe: ['submit_nhat_trinh','view_nhat_trinh'],
+    }
+    const DEFAULT_PAGES = {
+      admin: require('../models/User').ALL_PAGES,
+      viewer: ['overview','xe_tai','oto_con','nhat_trinh','gia_dau','gps','chuyen_doi','bao_cao_nhat_trinh','hieu_qua','analyze'],
+      xe: ['nhat_trinh'],
+    }
+
     // Enrich with computed fields
     const now = new Date()
     const result = users.map(u => {
-      const tempUser = Object.assign(Object.create(User.prototype), u)
-      tempUser.permissions = u.permissions ?? User.DEFAULT_PERMISSIONS?.[u.role] ?? []
-      tempUser.allowedPages = u.allowedPages ?? User.DEFAULT_PAGES?.[u.role] ?? []
       const locked = u.isLocked && (!u.lockedUntil || new Date(u.lockedUntil) > now)
       return {
         ...u,
-        permissions:  tempUser.permissions,
-        allowedPages: tempUser.allowedPages,
+        permissions:  u.permissions  ?? DEFAULT_PERMS[u.role]  ?? [],
+        allowedPages: u.allowedPages ?? DEFAULT_PAGES[u.role] ?? [],
         isLockedNow:  locked,
       }
     })
