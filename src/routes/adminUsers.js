@@ -11,7 +11,7 @@ router.use(protect, adminOnly)
 // ── GET /api/admin/users — danh sách users ────────────────
 router.get('/users', async (req, res) => {
   try {
-    const { q, role, active, page = 1, limit = 500 } = req.query
+    const { q, role, active, page = 1, limit = 9999 } = req.query
     const filter = {}
 
     if (q) {
@@ -23,12 +23,11 @@ router.get('/users', async (req, res) => {
       filter.active = active === 'true'
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit)
+    // Trả về tất cả users khớp filter (không giới hạn số lượng)
     const [users, total] = await Promise.all([
       User.find(filter)
         .select('-password -sessions')
-        .sort({ createdAt: -1 })
-        .skip(skip).limit(parseInt(limit))
+        .sort({ role: 1, createdAt: -1 })
         .lean(),
       User.countDocuments(filter),
     ])
