@@ -292,14 +292,14 @@ router.post('/sync-ntxt', auth, async (req, res) => {
       if (!bs) continue;
 
       // Thử nhiều field name variant
-      const km = getField(nt, ['km', 'tongKm', 'totalKm', 'soKm', 'KM']);
+      const km = getField(nt, ['tongKmDiChuyen', 'km', 'tongKm', 'totalKm', 'soKm', 'KM']);
       const tongKLVC = getField(nt, [
-        'tongKhoi', 'tongKLVC', 'slvc', 'tongKhoiLuong',
-        'khoiLuong', 'tongKhoiVanChuyen', 'SLVC', 'tongKhoiVC'
+        'tongKLChuyen', 'tongKhoi', 'tongKLVC', 'slvc',
+        'tongKhoiLuong', 'khoiLuong', 'tongKhoiVanChuyen', 'SLVC'
       ]);
       const klvcNoiBo = getField(nt, [
-        'khNoiBo', 'klvcNoiBo', 'slvcNoiBo', 'noiBoKhoi',
-        'khoiNoiBo', 'khoiLuongNoiBo', 'tongKhoiNoiBo'
+        'klNoiBo', 'khNoiBo', 'klvcNoiBo', 'slvcNoiBo',
+        'noiBoKhoi', 'khoiNoiBo', 'khoiLuongNoiBo', 'tongKhoiNoiBo'
       ]);
 
       await HieuQua.findOneAndUpdate(
