@@ -17,6 +17,7 @@ const gpsSyncRoutes  = require('./routes/gpsSync')
 const cuaHangRoutes  = require('./routes/cuaHang')
 const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
+const hieuQuaRoutes = require('./routes/hieuQua')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -25,6 +26,9 @@ const PORT = process.env.PORT || 3000
 app.use(cors({ origin: (o, cb) => cb(null, true), credentials: true }))
 app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb', extended: true }))
+
+const fileUpload = require('express-fileupload')
+app.use(fileUpload())
 
 // Public routes
 app.get('/', (req, res) => res.json({ status: 'ok', message: 'HSG Fleet API v2' }))
@@ -86,6 +90,7 @@ app.use('/api/import', protect, importRoutes)
 app.use('/api/analyze', protect, analyzeRoutes)
 app.use('/api/gps', protect, gpsSyncRoutes)
 app.use('/api/cua-hang', protect, cuaHangRoutes)
+app.use('/api/hieu-qua', protect, hieuQuaRoutes)
 
 // Temporary debug route - no auth needed
 app.get('/debug/xe/:bienSo', async (req, res) => {
