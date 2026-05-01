@@ -17,7 +17,7 @@ const gpsSyncRoutes  = require('./routes/gpsSync')
 const cuaHangRoutes  = require('./routes/cuaHang')
 const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
-const hieuQuaRoutes = require('./routes/hieuQua')
+const hieuQuaRoutes = require('./routes/hieuqua')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
