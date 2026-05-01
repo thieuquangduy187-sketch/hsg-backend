@@ -116,7 +116,10 @@ router.post('/config', async (req, res) => {
 })
 
 // ══════════════════════════════════════════════════════════
-// POST /api/cua-hang/batch-update — A: update hàng loạt theo đợt
+// POST /api/cua-hang/batch-update
+// Bước 1: HSG_MACH → HSH_MACH  (Mã hiện tại)
+// Bước 2: HSH_MACH → HSH_TENCH (Cưả hàng sử dụng)
+// Bước 3: Tổng kho → Tỉnh mới = Cưả hàng sử dụng
 // KHÔNG ghi cây điều động
 // ══════════════════════════════════════════════════════════
 router.post('/batch-update', async (req, res) => {
@@ -130,31 +133,38 @@ router.post('/batch-update', async (req, res) => {
     const xeDot = await cdCol.find({ 'Đợt chuyển đổi': dot }).toArray()
     if (!xeDot.length) return res.json({ success: true, updated: 0, message: 'Không có xe nào trong đợt này' })
 
-    // Load toàn bộ xetai + xeoto + danhsachcuahang 1 lần
-    const otoCol = db().collection('xeoto')
     const [allXe, allOto, allCH] = await Promise.all([
-      xeCol.find({}, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1, 'Cưả hàng sử dụng':1, 'Tỉnh mới':1 } }).toArray(),
-      otoCol.find({}, { projection: { 'BIỂN SỐ':1, 'BIẼNSỐ':1, 'Biển số':1 } }).toArray(),
+      xeCol.find({}, { projection: { 'BIỂN SỐ':1,'BIẼNSỐ':1,'Biển số':1,'Mã hiện tại':1,'Cưả hàng sử dụng':1,'Tỉnh mới':1 } }).toArray(),
+      db().collection('xeoto').find({}, { projection:{ 'BIỂN SỐ':1,'BIẼNSỐ':1,'Biển số':1 } }).toArray(),
       db().collection('danhsachcuahang').find({}).toArray(),
     ])
+
     // Build otoSet
     const otoSet = new Set()
     for (const o of allOto) {
-      const bs = (o['BIỂN SỐ'] || o['BIẼNSỐ'] || o['Biển số'] || '').trim()
+      const bs = (o['BIỂN SỐ']||o['BIẼNSỐ']||o['Biển số']||'').trim()
       if (bs) { otoSet.add(bs.toUpperCase()); otoSet.add(bs.toUpperCase().replace(/[\s\-\.]/g,'')) }
     }
 
-    // Build map normalized biển số → xe doc
+    // Build xeMap
     const xeMap = new Map()
     for (const x of allXe) {
-      const bs = (x['BIỂN SỐ'] || x['BIẼNSỐ'] || x['Biển số'] || '').trim()
+      const bs = (x['BIỂN SỐ']||x['BIẼNSỐ']||x['Biển số']||'').trim()
       if (bs) {
         xeMap.set(bs.toUpperCase(), x)
         xeMap.set(bs.toUpperCase().replace(/[\s\-\.]/g,''), x)
       }
     }
 
-    const results = []   // chi tiết từng xe
+    // Build lookup maps: mã → doc
+    const maHsgMap = new Map()
+    const maHshMap = new Map()
+    for (const ch of allCH) {
+      if (ch.HSG_MACH) maHsgMap.set(String(ch.HSG_MACH).trim(), ch)
+      if (ch.HSH_MACH) maHshMap.set(String(ch.HSH_MACH).trim(), ch)
+    }
+
+    const results = []
     const bulkOps = []
 
     for (const xe of xeDot) {
@@ -167,55 +177,86 @@ router.post('/batch-update', async (req, res) => {
       if (!xeDoc) {
         const isOto = otoSet.has(bienSo.toUpperCase()) || otoSet.has(bienSo.toUpperCase().replace(/[\s\-\.]/g,''))
         results.push({ bienSo, status: 'not_in_xetai',
-          reason: isOto ? 'Xe ô tô con (không cần cập nhật)' : 'Không tìm thấy trong xetai — đã thanh lý hoặc biển số sai'
+          reason: isOto ? 'Xe ô tô con' : 'Không tìm thấy trong xetai'
         })
         continue
       }
 
-      const tenCH = xeDoc['Cưả hàng sử dụng'] || ''
-      const tinh  = xeDoc['Tỉnh mới'] || ''
+      const maHienTai = (xeDoc['Mã hiện tại'] || '').trim()
+      const cuaHangCu = (xeDoc['Cưả hàng sử dụng'] || '').trim()
+      const tinhCu    = (xeDoc['Tỉnh mới'] || '').trim()
 
-      if (!tenCH) {
-        results.push({ bienSo, status: 'no_cuahang', reason: 'Xe chưa có thông tin cửa hàng sử dụng' })
+      // ── Tìm doc CH: ưu tiên theo mã, fallback theo tên ───
+      let chDoc = maHsgMap.get(maHienTai) || maHshMap.get(maHienTai)
+      if (!chDoc && cuaHangCu) chDoc = lookupFromDocs(allCH, cuaHangCu, tinhCu)
+
+      if (!chDoc) {
+        results.push({ bienSo, maHienTai, cuaHangCu, status: 'ch_not_found',
+          reason: `Không tìm thấy CH với mã "${maHienTai}" hoặc tên "${cuaHangCu}"`
+        })
         continue
       }
 
-      // Fix 2+3: dùng lookupFromDocs (đã load allCH) + strip prefix
-      const doc = lookupFromDocs(allCH, tenCH, tinh)
-      const info = doc ? {
-        ma:   doc.HSH_MACH || doc.HSG_MACH,
-        tinh: isTongKho(tenCH) ? tenCH : (doc.HSG_TINH || ''),
-        mien: doc['Miền'] || doc.Mien || '',
-      } : null
-      if (!info) {
-        results.push({ bienSo, tenCH, tinh, status: 'ch_not_found', reason: `Tên CH "${tenCH}" không tìm thấy trong danhsachcuahang` })
+      const hsgMach  = (chDoc.HSG_MACH || '').trim()
+      const hshMach  = (chDoc.HSH_MACH || hsgMach).trim()
+      const hshTenCH = (chDoc.HSH_TENCH || chDoc.HSG_TENCH || '').trim()
+      const tongKho  = isTongKho(cuaHangCu) || isTongKho(hshTenCH)
+
+      const updateFields = {}
+      const changes = []
+
+      // ── Bước 1: Mã hiện tại → HSH_MACH ──────────────────
+      if (maHienTai !== hshMach) {
+        updateFields['Mã hiện tại'] = hshMach
+        changes.push(\`Mã: \${maHienTai} → \${hshMach}\`)
+      }
+
+      // ── Bước 2: Cưả hàng sử dụng → HSH_TENCH ────────────
+      if (hshTenCH && cuaHangCu !== hshTenCH) {
+        updateFields['Cưả hàng sử dụng'] = hshTenCH
+        changes.push(\`CH: "\${cuaHangCu}" → "\${hshTenCH}"\`)
+      }
+
+      // ── Bước 3: Tổng kho → Tỉnh mới = Cưả hàng sử dụng ─
+      const newCuaHang = updateFields['Cưả hàng sử dụng'] || cuaHangCu
+      if (tongKho && tinhCu !== newCuaHang) {
+        updateFields['Tỉnh mới'] = newCuaHang
+        changes.push(\`Tỉnh (TK): "\${tinhCu}" → "\${newCuaHang}"\`)
+      }
+
+      if (Object.keys(updateFields).length === 0) {
+        results.push({ bienSo, maHienTai, cuaHangCu, status: 'already_updated',
+          reason: 'Đã đúng — không cần cập nhật'
+        })
         continue
       }
 
-      const newTinh = isTongKho(tenCH) ? tenCH : info.tinh
       bulkOps.push({
         updateOne: {
-          filter: { $or: [{ 'BIỂN SỐ': bienSo }, { 'BIẼNSỐ': bienSo }, { 'Biển số': bienSo }] },
-          update: { $set: { 'Mã hiện tại': info.ma, 'Tỉnh mới': newTinh, 'Miền': info.mien } }
+          filter: { $or: [
+            { 'BIỂN SỐ': bienSo },{ 'BIẼNSỐ': bienSo },{ 'Biển số': bienSo }
+          ]},
+          update: { $set: updateFields }
         }
       })
-      results.push({ bienSo, tenCH, tinh, status: 'updated', ma: info.ma, tinhMoi: newTinh, mien: info.mien })
+      results.push({ bienSo, maHienTai, cuaHangCu, status: 'updated', changes, hshMach, hshTenCH })
     }
 
     if (bulkOps.length) await xeCol.bulkWrite(bulkOps)
 
-    const updated   = results.filter(r => r.status === 'updated').length
-    const missed    = results.filter(r => r.status !== 'updated')
-
     res.json({
-      success: true,
-      total:   xeDot.length,
-      updated,
-      missed:  missed.length,
-      results, // toàn bộ chi tiết từng xe
-      message: `Đã cập nhật ${updated}/${xeDot.length} xe theo ${dot}`
+      success:    true,
+      total:      xeDot.length,
+      updated:    results.filter(r => r.status === 'updated').length,
+      alreadyOk:  results.filter(r => r.status === 'already_updated').length,
+      missed:     results.filter(r => !['updated','already_updated'].includes(r.status)).length,
+      results,
+      message:    `Đã cập nhật ${results.filter(r=>r.status==='updated').length} xe | ${results.filter(r=>r.status==='already_updated').length} xe đã đúng | ${results.filter(r=>!['updated','already_updated'].includes(r.status)).length} xe lỗi`
     })
-  } catch(e) { res.status(500).json({ error: e.message }) }
+  } catch(e) {
+    console.error('[batch-update]', e)
+    res.status(500).json({ error: e.message })
+  }
 })
 
 // ══════════════════════════════════════════════════════════
