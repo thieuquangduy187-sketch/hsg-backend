@@ -1,4 +1,4 @@
-require('dotenv').config()
+\require('dotenv').config()
 const express  = require('express')
 const cors     = require('cors')
 const mongoose = require('mongoose')
@@ -17,7 +17,6 @@ const gpsSyncRoutes  = require('./routes/gpsSync')
 const cuaHangRoutes  = require('./routes/cuaHang')
 const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
-const hieuQuaRoutes = require('./routes/hieuqua')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -26,9 +25,6 @@ const PORT = process.env.PORT || 3000
 app.use(cors({ origin: (o, cb) => cb(null, true), credentials: true }))
 app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb', extended: true }))
-
-const fileUpload = require('express-fileupload')
-app.use(fileUpload())
 
 // Public routes
 app.get('/', (req, res) => res.json({ status: 'ok', message: 'HSG Fleet API v2' }))
@@ -90,7 +86,6 @@ app.use('/api/import', protect, importRoutes)
 app.use('/api/analyze', protect, analyzeRoutes)
 app.use('/api/gps', protect, gpsSyncRoutes)
 app.use('/api/cua-hang', protect, cuaHangRoutes)
-app.use('/api/hieu-qua', protect, hieuQuaRoutes)
 
 // Temporary debug route - no auth needed
 app.get('/debug/xe/:bienSo', async (req, res) => {
@@ -110,6 +105,9 @@ app.get('/debug/xe/:bienSo', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
+// Health check — dùng cho keep-alive ping
+app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
+
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
 app.use((err, req, res, next) => {
   console.error(err)
@@ -122,6 +120,17 @@ mongoose.connect(process.env.MONGODB_URI)
     app.listen(PORT, () => {
       console.log(`✓ Server on port ${PORT}`)
       startGpsCron()
+
+      // ── Keep-alive: ping mỗi 14 phút để tránh Render spin-down ──
+      const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`
+      setInterval(async () => {
+        try {
+          const res = await fetch(`${BACKEND_URL}/health`)
+          console.log(`[keep-alive] ping ${new Date().toISOString()} → ${res.status}`)
+        } catch(e) {
+          console.warn('[keep-alive] ping failed:', e.message)
+        }
+      }, 14 * 60 * 1000)
     })
   })
   .catch(err => { console.error('✗ DB failed:', err.message); process.exit(1) })
