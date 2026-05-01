@@ -1,4 +1,4 @@
-\require('dotenv').config()
+require('dotenv').config()
 const express  = require('express')
 const cors     = require('cors')
 const mongoose = require('mongoose')
@@ -120,17 +120,6 @@ mongoose.connect(process.env.MONGODB_URI)
     app.listen(PORT, () => {
       console.log(`✓ Server on port ${PORT}`)
       startGpsCron()
-
-      // ── Keep-alive: ping mỗi 14 phút để tránh Render spin-down ──
-      const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`
-      setInterval(async () => {
-        try {
-          const res = await fetch(`${BACKEND_URL}/health`)
-          console.log(`[keep-alive] ping ${new Date().toISOString()} → ${res.status}`)
-        } catch(e) {
-          console.warn('[keep-alive] ping failed:', e.message)
-        }
-      }, 14 * 60 * 1000)
     })
   })
   .catch(err => { console.error('✗ DB failed:', err.message); process.exit(1) })
