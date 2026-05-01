@@ -201,36 +201,60 @@ router.post('/users/:id/lock', async (req, res) => {
   }
 })
 
-// ── GET /api/admin/sessions — tất cả sessions đang active ─
+// ── GET /api/admin/sessions ───────────────────────────────
 router.get('/sessions', async (req, res) => {
   try {
     const now = new Date()
-    const users = await User.find({
-      'sessions.isActive': true,
-      'sessions.expiresAt': { $gt: now },
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000)
+
+    // Lấy tất cả user active trong 24h
+    const allActive = await User.find({
+      lastActive: { $gt: since24h }
     })
-    .select('username displayName role sessions')
+    .select('username displayName role sessions lastActive lastLogin')
     .lean()
 
     const sessions = []
-    users.forEach(u => {
-      u.sessions
-        .filter(s => s.isActive && (!s.expiresAt || new Date(s.expiresAt) > now))
-        .forEach(s => {
+
+    for (const u of allActive) {
+      const activeSessions = (u.sessions || []).filter(s =>
+        s.isActive && (!s.expiresAt || new Date(s.expiresAt) > now)
+      )
+
+      if (activeSessions.length > 0) {
+        // User có formal sessions → dùng sessions
+        activeSessions.forEach(s => {
           sessions.push({
             sessionId:   s._id,
             userId:      u._id,
             username:    u.username,
             displayName: u.displayName,
             role:        u.role,
-            ip:          s.ip,
-            device:      s.device,
+            ip:          s.ip || '—',
+            device:      s.device || 'Unknown',
             createdAt:   s.createdAt,
             lastSeenAt:  s.lastSeenAt,
             expiresAt:   s.expiresAt,
+            type:        'session',
           })
         })
-    })
+      } else {
+        // User active nhưng dùng token cũ (chưa có session mới)
+        sessions.push({
+          sessionId:   null,
+          userId:      u._id,
+          username:    u.username,
+          displayName: u.displayName,
+          role:        u.role,
+          ip:          '—',
+          device:      'Token cũ',
+          createdAt:   u.lastLogin || u.lastActive,
+          lastSeenAt:  u.lastActive,
+          expiresAt:   null,
+          type:        'legacy', // token cũ, không thể revoke từ đây
+        })
+      }
+    }
 
     sessions.sort((a, b) => new Date(b.lastSeenAt) - new Date(a.lastSeenAt))
     res.json({ sessions, total: sessions.length })
