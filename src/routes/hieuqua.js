@@ -96,7 +96,6 @@ function getXeInfo(xe) {
 
 // ────────────────────────────────────────────
 // GET /api/hieu-qua?thang=X&nam=Y
-// Lấy báo cáo hiệu quả tháng X/Y
 // ────────────────────────────────────────────
 router.get('/', auth, async (req, res) => {
   try {
@@ -106,34 +105,40 @@ router.get('/', auth, async (req, res) => {
     const db = mongoose.connection.db;
     const xetaiCol = db.collection('xetai');
 
-    // Lấy tất cả xe tải
-    const allXe = await xetaiCol.find({}).toArray();
-
-    // Lấy dữ liệu hiệu quả tháng này
+    // Lấy hieu_qua records trước — đây là nguồn chính
     const hqRecords = await HieuQua.find({ thang, nam }).lean();
-    const hqMap = {};
-    hqRecords.forEach(h => {
-      hqMap[normBienSo(h.bienSo)] = h;
-    });
+    if (!hqRecords.length) {
+      return res.json({ thang, nam, total: 0, dat: 0, khongDat: 0, data: [] });
+    }
+
+    // Build xeMap từ xetai để enrich thông tin
+    const allXe = await xetaiCol.find({}).toArray();
+    const xeMap = {};
+    for (const xe of allXe) {
+      const bs = normBienSo(
+        xe['BIỂN SỐ'] || xe['BIẼNSỐ'] || xe['Biển số'] || xe.bienSo || ''
+      );
+      if (bs) xeMap[bs] = xe;
+    }
 
     const results = [];
 
-    for (const xe of allXe) {
+    // Loop qua hieu_qua records (không skip nếu xetai không match)
+    for (const hq of hqRecords) {
+      const bs = normBienSo(hq.bienSo);
+      if (!bs) continue;
+
+      const xe = xeMap[bs] || {};
       const info = getXeInfo(xe);
-      if (!info.bienSo) continue;
-
-      const hq = hqMap[info.bienSo];
-      if (!hq) continue; // Chỉ trả về xe có data tháng này
-
       const metrics = calcMetrics(xe, hq);
 
       results.push({
-        bienSo: info.bienSo,
-        cuaHang: info.cuaHang,
-        tinhMoi: info.tinhMoi,
-        maHienTai: info.maHienTai,
-        taiTrong: info.taiTrong,
-        tenTaiSan: info.tenTaiSan,
+        bienSo: bs,
+        cuaHang: info.cuaHang || '',
+        tinhMoi: info.tinhMoi || '',
+        maHienTai: info.maHienTai || '',
+        taiTrong: info.taiTrong || hq.taiTrong || 0,
+        tenTaiSan: info.tenTaiSan || '',
         isTonXop: metrics.isTX,
         km: hq.km || 0,
         tongKLVC: hq.tongKLVC || 0,
@@ -146,7 +151,6 @@ router.get('/', auth, async (req, res) => {
       });
     }
 
-    // Sắp xếp: Không đạt trước, theo tỉnh
     results.sort((a, b) => {
       if (a.danhGia !== b.danhGia) return a.danhGia === 'Không đạt' ? -1 : 1;
       return (a.tinhMoi || '').localeCompare(b.tinhMoi || '', 'vi');
