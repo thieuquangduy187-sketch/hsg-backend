@@ -11,7 +11,7 @@ router.use(protect, adminOnly)
 // ── GET /api/admin/users — danh sách users ────────────────
 router.get('/users', async (req, res) => {
   try {
-    const { q, role, active, page = 1, limit = 50 } = req.query
+    const { q, role, active, page = 1, limit = 500 } = req.query
     const filter = {}
 
     if (q) {
