@@ -109,69 +109,8 @@ app.get('/debug/xe/:bienSo', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
-// Health check — dùng cho keep-alive ping
+// Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
-
-// ── Migration endpoint (chạy 1 lần, xóa sau khi dùng) ────
-// POST /migrate/users?secret=hsg-cron-2026
-app.post('/migrate/users', async (req, res) => {
-  const secret = req.query.secret || req.headers['x-cron-secret']
-  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
-  try {
-    const mongoose = require('mongoose')
-    const db = mongoose.connection.db
-    const col = db.collection('users')
-
-    // Thêm các field mới vào tất cả user chưa có
-    const result = await col.updateMany(
-      {},
-      {
-        $set: {
-          isLocked:      false,
-          loginAttempts: 0,
-          lockedReason:  '',
-          sessions:      [],
-        },
-        // Chỉ set nếu chưa có (dùng $setOnInsert không được với updateMany,
-        // nên dùng $set với điều kiện check bên dưới)
-      }
-    )
-
-    // permissions và allowedPages để null (dùng default theo role)
-    await col.updateMany(
-      { permissions: { $exists: false } },
-      { $set: { permissions: null } }
-    )
-    await col.updateMany(
-      { allowedPages: { $exists: false } },
-      { $set: { allowedPages: null } }
-    )
-    await col.updateMany(
-      { lastFailedAt: { $exists: false } },
-      { $set: { lastFailedAt: null } }
-    )
-    await col.updateMany(
-      { lockedUntil: { $exists: false } },
-      { $set: { lockedUntil: null } }
-    )
-    await col.updateMany(
-      { createdBy: { $exists: false } },
-      { $set: { createdBy: '' } }
-    )
-
-    const total = await col.countDocuments()
-    res.json({
-      ok: true,
-      message: `Migration hoàn tất. Đã cập nhật ${result.modifiedCount}/${total} users.`,
-      modified: result.modifiedCount,
-      total
-    })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
 app.use((err, req, res, next) => {
