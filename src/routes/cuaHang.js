@@ -208,20 +208,20 @@ router.post('/batch-update', async (req, res) => {
       // ── Bước 1: Mã hiện tại → HSH_MACH ──────────────────
       if (maHienTai !== hshMach) {
         updateFields['Mã hiện tại'] = hshMach
-        changes.push(\`Mã: \${maHienTai} → \${hshMach}\`)
+        changes.push(`Mã: ${maHienTai} → ${hshMach}`)
       }
 
       // ── Bước 2: Cưả hàng sử dụng → HSH_TENCH ────────────
       if (hshTenCH && cuaHangCu !== hshTenCH) {
         updateFields['Cưả hàng sử dụng'] = hshTenCH
-        changes.push(\`CH: "\${cuaHangCu}" → "\${hshTenCH}"\`)
+        changes.push(`CH: "${cuaHangCu}" → "${hshTenCH}"`)
       }
 
       // ── Bước 3: Tổng kho → Tỉnh mới = Cưả hàng sử dụng ─
       const newCuaHang = updateFields['Cưả hàng sử dụng'] || cuaHangCu
       if (tongKho && tinhCu !== newCuaHang) {
         updateFields['Tỉnh mới'] = newCuaHang
-        changes.push(\`Tỉnh (TK): "\${tinhCu}" → "\${newCuaHang}"\`)
+        changes.push(`Tỉnh (TK): "${tinhCu}" → "${newCuaHang}"`)
       }
 
       if (Object.keys(updateFields).length === 0) {
