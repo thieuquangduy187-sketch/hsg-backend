@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-const auth = require('../middleware/auth');
+const { protect: auth } = require('../middleware/auth');
 const XLSX = require('xlsx');
 const Anthropic = require('@anthropic-ai/sdk');
 const HieuQua = require('../models/HieuQua');
