@@ -18,6 +18,7 @@ const cuaHangRoutes  = require('./routes/cuaHang')
 const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
 const hieuQuaRoutes = require('./routes/hieuqua')
+const adminUsersRoutes = require('./routes/adminUsers')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -88,6 +89,7 @@ app.use('/api/analyze', protect, analyzeRoutes)
 app.use('/api/gps', protect, gpsSyncRoutes)
 app.use('/api/cua-hang', protect, cuaHangRoutes)
 app.use('/api/hieu-qua', protect, hieuQuaRoutes)
+app.use('/api/admin', adminUsersRoutes)
 
 // Temporary debug route - no auth needed
 app.get('/debug/xe/:bienSo', async (req, res) => {
