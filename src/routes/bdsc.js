@@ -332,31 +332,30 @@ router.put('/docs/:bienSo', async (req, res) => {
 
 // ═══════════════════════════════════════════════════════
 // OCR — Đọc ảnh/PDF báo giá bằng Claude Vision
-// POST /api/bdsc/ocr
-// Body: { base64, mimeType, filename, loai? }
-// loai: 'bdsc' | 'lop' — nếu không truyền thì AI tự detect
+// POST /api/bdsc/ocr   Body: { base64, mimeType, filename, loai? }
 // ═══════════════════════════════════════════════════════
 router.post('/ocr', async (req, res) => {
   const { base64, mimeType, filename, loai } = req.body
   if (!base64) return res.status(400).json({ error: 'Thiếu base64' })
 
   const KEY = process.env.ANTHROPIC_API_KEY
-  if (!KEY) return res.status(500).json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY trên Render' })
+  if (!KEY) return res.status(500).json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY — vào Render Dashboard > Environment' })
 
-  // Dùng axios — backend Node.js có thể không có native fetch
-  let axios
-  try { axios = require('axios') } catch {
-    return res.status(500).json({ error: 'axios chưa cài. Chạy: npm install axios' })
-  }
+  // Dùng @anthropic-ai/sdk — package đã có sẵn trong dự án (hieuqua.js dùng cùng SDK)
+  let Anthropic
+  try { Anthropic = require('@anthropic-ai/sdk') }
+  catch { return res.status(500).json({ error: '@anthropic-ai/sdk chưa cài. Chạy: npm install @anthropic-ai/sdk' }) }
+
+  const client = new Anthropic({ apiKey: KEY })
 
   const promptBdsc = `Đây là ảnh hoặc PDF báo giá sửa chữa / bảo dưỡng xe tải hoặc xe ô tô Việt Nam.
 Đọc toàn bộ và trả về JSON sau (KHÔNG markdown, KHÔNG giải thích, CHỈ JSON thuần):
 {"bienSo":"","km":0,"ngay":"","garage":"","soRO":"","tongTien":0,"loaiBaoGia":"bdsc","hangMuc":[{"ten":"","loaiChiPhi":"congViec","mucDich":"suaChua","soLuong":1,"donGia":0,"thanhTien":0,"canhBao":""}]}
 
 Quy tắc bắt buộc:
-- bienSo: biển số xe đầy đủ (vd: 61C-15541). Tìm ở trường "Biển số xe" hoặc "Số xe"
-- km: chỉ số, không dấu chấm (300.190→300190). Tìm ở trường "Số Km" hoặc "Odometer"
-- ngay: dd/mm/yyyy. Tìm ở tiêu đề hoặc "Ngày"
+- bienSo: biển số xe đầy đủ (vd: 61C-15541). Tìm ở "Biển số xe" hoặc "Số xe"
+- km: chỉ số, không dấu chấm (300.190→300190). Tìm ở "Số Km"
+- ngay: dd/mm/yyyy
 - garage: tên công ty sửa chữa ở đầu phiếu
 - soRO: số phiếu/RO ở đầu phiếu
 - tongTien: tổng CUỐI CÙNG sau giảm giá
@@ -369,58 +368,61 @@ Quy tắc bắt buộc:
 Trả về JSON sau (KHÔNG markdown, KHÔNG giải thích, CHỈ JSON thuần):
 {"bienSo":"","km":0,"ngay":"","garage":"","soRO":"","tongTien":0,"loaiBaoGia":"lop","lopDaThay":[{"viTri":"","size":"","thuongHieu":"","soLuong":1,"donGia":0,"thanhTien":0}]}
 
-Quy tắc:
-- size: kích thước lốp vd 900R20-18PR, 11.00R20, 750-16
-- thuongHieu: Maxxis / Bridgestone / DRC / ...
-- viTri: vị trí lốp nếu có, để trống nếu không rõ
-- km: không dấu chấm`
+Quy tắc: size=kích thước lốp (vd 900R20-18PR), thuongHieu=Maxxis/Bridgestone/DRC, km=không dấu chấm`
 
-  const chosenPrompt = loai === 'lop' ? promptLop : promptBdsc
-  const isPdf    = (mimeType || '').includes('pdf')
-  const imgBlock = isPdf
-    ? { type:'document', source:{ type:'base64', media_type:'application/pdf', data:base64 } }
-    : { type:'image',    source:{ type:'base64', media_type:mimeType||'image/jpeg', data:base64 } }
+  const isPdf = (mimeType || '').includes('pdf')
+
+  // Claude SDK không hỗ trợ PDF trong messages — convert sang image/jpeg nếu cần
+  // PDF thực tế rất hiếm từ mobile scan, thường là JPG/PNG
+  const imgSource = {
+    type: 'base64',
+    media_type: isPdf ? 'application/pdf' : (mimeType || 'image/jpeg'),
+    data: base64,
+  }
 
   try {
-    const { data } = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2048,
-        messages: [{ role:'user', content:[ imgBlock, { type:'text', text:chosenPrompt } ] }],
-      },
-      {
-        headers: { 'x-api-key':KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
-        timeout: 30000,
-      }
-    )
+    const message = await client.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 2048,
+      messages: [{
+        role: 'user',
+        content: [
+          isPdf
+            ? { type: 'document', source: imgSource }
+            : { type: 'image',    source: imgSource },
+          { type: 'text', text: loai === 'lop' ? promptLop : promptBdsc },
+        ],
+      }],
+    })
 
-    const raw = data.content?.[0]?.text || ''
+    const rawText = message.content?.[0]?.text || ''
+    console.log('[OCR] raw (200 chars):', rawText.slice(0, 200))
 
-    // Trích JSON — handle cả khi AI bọc trong ``` hay không
     let parsed = {}
-    const match = raw.match(/\{[\s\S]*\}/)
+    const match = rawText.match(/\{[\s\S]*\}/)
     if (match) {
-      try { parsed = JSON.parse(match[0]) } catch { /* ignore */ }
+      try { parsed = JSON.parse(match[0]) }
+      catch (pe) { console.error('[OCR] JSON parse err:', pe.message) }
     }
 
-    // Parse thất bại → trả rỗng để nhập tay
     if (!parsed.bienSo && !parsed.km) {
-      return res.json({ bienSo:'', km:'', ngay:'', garage:'', soRO:'', tongTien:'',
-        loaiBaoGia:loai||'bdsc', hangMuc:[], lopDaThay:[], aiRead:true,
-        rawText: raw.slice(0,500) })
+      return res.json({
+        bienSo:'', km:'', ngay:'', garage:'', soRO:'', tongTien:'',
+        loaiBaoGia: loai || 'bdsc', hangMuc:[], lopDaThay:[],
+        aiRead: true, rawText: rawText.slice(0, 400),
+      })
     }
 
-    // Detect anomaly cho BDSC
     let canhBaoPhieu = ''
     if (parsed.bienSo && parsed.km && parsed.loaiBaoGia !== 'lop') {
-      canhBaoPhieu = await detectAnomaly(normBienSo(parsed.bienSo), +parsed.km, +parsed.tongTien, parsed.hangMuc||[])
+      try { canhBaoPhieu = await detectAnomaly(normBienSo(parsed.bienSo), +parsed.km, +parsed.tongTien, parsed.hangMuc || []) }
+      catch (_) {}
     }
 
-    res.json({ ...parsed, aiRead:true, canhBaoPhieu })
+    res.json({ ...parsed, aiRead: true, canhBaoPhieu })
   } catch (e) {
-    const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message
-    res.status(500).json({ error: `Claude API: ${msg}` })
+    console.error('[OCR] SDK error:', e.status, e.message)
+    res.status(500).json({ error: `Claude SDK: ${e.message}` })
   }
 })
 
