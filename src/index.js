@@ -29,6 +29,7 @@ const { startGpsCron } = require('./gpsCron')
 const importRoutes = require('./routes/import')
 const hieuQuaRoutes = require('./routes/hieuqua')
 const adminUsersRoutes = require('./routes/adminUsers')
+const bdscRoutes       = require('./routes/bdsc')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -130,6 +131,7 @@ app.use('/api/gps', protect, gpsSyncRoutes)
 app.use('/api/cua-hang', protect, cuaHangRoutes)
 app.use('/api/hieu-qua', protect, hieuQuaRoutes)
 app.use('/api/admin', adminUsersRoutes)
+app.use('/api/bdsc',  protect, bdscRoutes)
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
