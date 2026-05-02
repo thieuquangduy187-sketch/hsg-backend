@@ -1,16 +1,25 @@
-const router = require('express').Router()
-const User   = require('../models/User')
+const router      = require('express').Router()
+const rateLimit   = require('express-rate-limit')
+const User        = require('../models/User')
 const { signToken, protect, adminOnly } = require('../middleware/auth')
 
+// ── [C6] Rate limiting cho login ──────────────────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 phút
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Quá nhiều lần thử đăng nhập. Vui lòng thử lại sau 15 phút.' }
+})
+
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body
     if (!username || !password) {
       return res.status(400).json({ error: 'Vui lòng nhập tên đăng nhập và mật khẩu.' })
     }
 
-    // Tìm user (case-insensitive vì username đã lowercase)
     const user = await User.findOne({ username: username.trim().toLowerCase() })
     if (!user) {
       return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' })
@@ -20,17 +29,14 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: 'Tài khoản đã bị vô hiệu hóa.' })
     }
 
-    // Verify password
     const isMatch = await user.verifyPassword(password)
     if (!isMatch) {
       return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' })
     }
 
-    // Update lastLogin
     user.lastLogin = new Date()
     await user.save()
 
-    // Tạo JWT
     const token = signToken(user._id)
 
     res.json({
@@ -43,19 +49,17 @@ router.post('/login', async (req, res) => {
   }
 })
 
-// ── GET /api/auth/me — lấy thông tin user hiện tại ───────────────────────────
+// ── GET /api/auth/me ──────────────────────────────────────────────────────────
 router.get('/me', protect, (req, res) => {
   res.json({ user: req.user.toSafe() })
 })
 
-// ── POST /api/auth/logout — client xóa token, server ghi nhận ────────────────
+// ── POST /api/auth/logout ─────────────────────────────────────────────────────
 router.post('/logout', protect, (req, res) => {
-  // JWT stateless — logout chỉ cần client xóa token
-  // Có thể thêm blacklist nếu cần (Redis), giờ chỉ return success
   res.json({ message: 'Đăng xuất thành công.' })
 })
 
-// ── POST /api/auth/change-password — đổi mật khẩu ────────────────────────────
+// ── POST /api/auth/change-password ───────────────────────────────────────────
 router.post('/change-password', protect, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body
@@ -72,7 +76,7 @@ router.post('/change-password', protect, async (req, res) => {
       return res.status(401).json({ error: 'Mật khẩu hiện tại không đúng.' })
     }
 
-    user.password = newPassword // pre-save hook sẽ hash
+    user.password = newPassword
     await user.save()
 
     res.json({ message: 'Đổi mật khẩu thành công.' })
@@ -81,8 +85,7 @@ router.post('/change-password', protect, async (req, res) => {
   }
 })
 
-// ── POST /api/auth/seed — tạo user lần đầu (chỉ dùng 1 lần, xóa sau) ─────────
-// Bảo vệ bằng SEED_SECRET env var
+// ── POST /api/auth/seed — tạo user lần đầu (chỉ dùng 1 lần) ─────────────────
 router.post('/seed', async (req, res) => {
   try {
     const { secret } = req.body
@@ -90,16 +93,20 @@ router.post('/seed', async (req, res) => {
       return res.status(403).json({ error: 'Sai secret key.' })
     }
 
-    // Kiểm tra đã có user chưa
     const existing = await User.findOne({ username: 'thieuquangduy' })
     if (existing) {
       return res.json({ message: 'User đã tồn tại.', user: existing.toSafe() })
     }
 
-    // Tạo user mặc định
+    // [C2] Dùng ADMIN_PASSWORD từ env, không hardcode
+    const adminPassword = process.env.ADMIN_PASSWORD
+    if (!adminPassword) {
+      return res.status(500).json({ error: 'ADMIN_PASSWORD env var chưa được cấu hình.' })
+    }
+
     const user = new User({
       username:    'thieuquangduy',
-      password:    'duy2061997',
+      password:    adminPassword,
       displayName: 'Thiều Quang Duy',
       role:        'admin',
       active:      true,
@@ -115,8 +122,8 @@ router.post('/seed', async (req, res) => {
   }
 })
 
-// ── GET /api/auth/seed-xe — Tạo xe users (dùng biển số cho xe trùng mã) ──
-router.get('/seed-xe', async (req, res) => {
+// ── GET /api/auth/seed-xe — [C1] Yêu cầu auth + admin ───────────────────────
+router.get('/seed-xe', protect, adminOnly, async (req, res) => {
   try {
     const mongoose = require('mongoose')
     const User = require('../models/User')
@@ -127,10 +134,8 @@ router.get('/seed-xe', async (req, res) => {
       return String(bs).replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
     }
 
-    // Xóa toàn bộ xe users cũ
     await User.deleteMany({ role: 'xe' })
 
-    // Nhóm theo mã hiện tại
     const nhomMa = {}
     for (const xe of xeDocs) {
       const ma = String(xe['Mã hiện tại'] || xe['Mã hiện tại2'] || '').trim()
@@ -149,12 +154,10 @@ router.get('/seed-xe', async (req, res) => {
       let username, displayName, bienSoChinh
 
       if (xeList.length === 1) {
-        // Xe unique → username = biển số stripped
         bienSoChinh = bienSoAll[0] || ma
         username    = bienSoAll[0] ? stripBienSo(bienSoAll[0]) : ma.toLowerCase()
         displayName = `Xe ${bienSoChinh}`
       } else {
-        // Nhiều xe cùng mã → username = mã hiện tại
         username    = ma.toLowerCase()
         displayName = `Nhóm ${ma} (${bienSoAll.length} xe)`
         bienSoChinh = bienSoAll[0] || ma
@@ -177,7 +180,7 @@ router.get('/seed-xe', async (req, res) => {
   }
 })
 
-// GET /api/auth/stats — Online users + total visits (admin only)
+// GET /api/auth/stats — Online users (admin only)
 router.get('/stats', protect, adminOnly, async (req, res) => {
   try {
     const User = require('../models/User')
