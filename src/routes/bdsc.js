@@ -330,4 +330,106 @@ router.put('/docs/:bienSo', async (req, res) => {
   }
 })
 
+// ═══════════════════════════════════════════════════════
+// OCR — Đọc ảnh báo giá bằng Claude Vision
+// POST /api/bdsc/ocr
+// Body: { base64: string, mimeType: string, filename: string }
+// ═══════════════════════════════════════════════════════
+router.post('/ocr', async (req, res) => {
+  const { base64, mimeType, filename } = req.body
+  if (!base64) return res.status(400).json({ error: 'Thiếu base64' })
+
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
+  if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY' })
+
+  const prompt = `Đây là ảnh báo giá sửa chữa / bảo dưỡng xe tải hoặc xe ô tô của một công ty vận tải Việt Nam.
+
+Hãy đọc kỹ và trả về JSON theo đúng cấu trúc sau (không có markdown, không có giải thích, chỉ JSON thuần):
+
+{
+  "bienSo": "biển số xe, ví dụ: 61C-15541",
+  "km": 300190,
+  "ngay": "27/04/2026",
+  "garage": "tên garage/đơn vị sửa chữa",
+  "soRO": "số RO hoặc số báo giá",
+  "tongTien": 6643400,
+  "loaiBaoGia": "bdsc hoặc lop",
+  "hangMuc": [
+    {
+      "ten": "mô tả công việc hoặc vật tư",
+      "loaiChiPhi": "congViec hoặc vatTu hoặc giaCongNgoai",
+      "mucDich": "baoDuongDinhKy hoặc suaChua",
+      "soLuong": 1,
+      "donGia": 1000000,
+      "thanhTien": 1000000,
+      "canhBao": ""
+    }
+  ]
+}
+
+Quy tắc phân loại:
+- loaiBaoGia = "lop" nếu phiếu chủ yếu là thay lốp/vỏ xe. Ngược lại = "bdsc"
+- loaiChiPhi = "congViec" nếu là công lao động, "vatTu" nếu là phụ tùng/vật tư, "giaCongNgoai" nếu là gia công ngoài
+- mucDich = "baoDuongDinhKy" nếu là hạng mục bảo dưỡng định kỳ (thay nhớt, lọc nhớt, lọc gió, bơm mỡ...), ngược lại = "suaChua"
+- tongTien = tổng tiền SAU giảm giá nếu có
+- km: chỉ lấy số, bỏ dấu chấm phẩy (300.190 → 300190)
+- Nếu không đọc được field nào thì để "" hoặc 0`
+
+  try {
+    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6',
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: base64 },
+            },
+            { type: 'text', text: prompt },
+          ],
+        }],
+      }),
+    })
+
+    if (!apiRes.ok) {
+      const err = await apiRes.text()
+      return res.status(500).json({ error: `Claude API error: ${err}` })
+    }
+
+    const data = await apiRes.json()
+    const raw  = data.content?.[0]?.text || ''
+
+    // Parse JSON từ response
+    let parsed = {}
+    try {
+      // Bỏ markdown fences nếu có
+      const clean = raw.replace(/```json|```/g, '').trim()
+      parsed = JSON.parse(clean)
+    } catch {
+      // Fallback: trả về text thô để frontend hiển thị
+      return res.json({ bienSo:'', km:'', ngay:'', garage:'', soRO:'', tongTien:'',
+        loaiBaoGia:'bdsc', hangMuc:[], aiRead:true, rawText: raw })
+    }
+
+    // Detect anomaly nếu có biển số và km
+    let canhBaoPhieu = ''
+    if (parsed.bienSo && parsed.km) {
+      const bs = normBienSo(parsed.bienSo)
+      canhBaoPhieu = await detectAnomaly(bs, +parsed.km, +parsed.tongTien, parsed.hangMuc || [])
+    }
+
+    res.json({ ...parsed, aiRead: true, canhBaoPhieu })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 module.exports = router
