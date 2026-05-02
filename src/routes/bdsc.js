@@ -331,102 +331,143 @@ router.put('/docs/:bienSo', async (req, res) => {
 })
 
 // ═══════════════════════════════════════════════════════
-// OCR — Đọc ảnh báo giá bằng Claude Vision
+// OCR — Đọc ảnh/PDF báo giá bằng Claude Vision
 // POST /api/bdsc/ocr
-// Body: { base64: string, mimeType: string, filename: string }
+// Body: { base64, mimeType, filename, loai? }
+// loai: 'bdsc' | 'lop' — nếu không truyền thì AI tự detect
 // ═══════════════════════════════════════════════════════
 router.post('/ocr', async (req, res) => {
-  const { base64, mimeType, filename } = req.body
+  const { base64, mimeType, filename, loai } = req.body
   if (!base64) return res.status(400).json({ error: 'Thiếu base64' })
 
-  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY
-  if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY' })
+  const KEY = process.env.ANTHROPIC_API_KEY
+  if (!KEY) return res.status(500).json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY trên Render' })
 
-  const prompt = `Đây là ảnh báo giá sửa chữa / bảo dưỡng xe tải hoặc xe ô tô của một công ty vận tải Việt Nam.
+  // Dùng axios — backend Node.js có thể không có native fetch
+  let axios
+  try { axios = require('axios') } catch {
+    return res.status(500).json({ error: 'axios chưa cài. Chạy: npm install axios' })
+  }
 
-Hãy đọc kỹ và trả về JSON theo đúng cấu trúc sau (không có markdown, không có giải thích, chỉ JSON thuần):
+  const promptBdsc = `Đây là ảnh hoặc PDF báo giá sửa chữa / bảo dưỡng xe tải hoặc xe ô tô Việt Nam.
+Đọc toàn bộ và trả về JSON sau (KHÔNG markdown, KHÔNG giải thích, CHỈ JSON thuần):
+{"bienSo":"","km":0,"ngay":"","garage":"","soRO":"","tongTien":0,"loaiBaoGia":"bdsc","hangMuc":[{"ten":"","loaiChiPhi":"congViec","mucDich":"suaChua","soLuong":1,"donGia":0,"thanhTien":0,"canhBao":""}]}
 
-{
-  "bienSo": "biển số xe, ví dụ: 61C-15541",
-  "km": 300190,
-  "ngay": "27/04/2026",
-  "garage": "tên garage/đơn vị sửa chữa",
-  "soRO": "số RO hoặc số báo giá",
-  "tongTien": 6643400,
-  "loaiBaoGia": "bdsc hoặc lop",
-  "hangMuc": [
-    {
-      "ten": "mô tả công việc hoặc vật tư",
-      "loaiChiPhi": "congViec hoặc vatTu hoặc giaCongNgoai",
-      "mucDich": "baoDuongDinhKy hoặc suaChua",
-      "soLuong": 1,
-      "donGia": 1000000,
-      "thanhTien": 1000000,
-      "canhBao": ""
-    }
-  ]
-}
+Quy tắc bắt buộc:
+- bienSo: biển số xe đầy đủ (vd: 61C-15541). Tìm ở trường "Biển số xe" hoặc "Số xe"
+- km: chỉ số, không dấu chấm (300.190→300190). Tìm ở trường "Số Km" hoặc "Odometer"
+- ngay: dd/mm/yyyy. Tìm ở tiêu đề hoặc "Ngày"
+- garage: tên công ty sửa chữa ở đầu phiếu
+- soRO: số phiếu/RO ở đầu phiếu
+- tongTien: tổng CUỐI CÙNG sau giảm giá
+- loaiBaoGia: "lop" nếu phiếu chủ yếu thay lốp/vỏ, còn lại "bdsc"
+- loaiChiPhi: "congViec"=công lao động, "vatTu"=phụ tùng vật tư
+- mucDich: "baoDuongDinhKy" nếu BD định kỳ (nhớt/lọc/bơm mỡ/nước mát), còn lại "suaChua"
+- Liệt kê TẤT CẢ hạng mục bao gồm vật tư`
 
-Quy tắc phân loại:
-- loaiBaoGia = "lop" nếu phiếu chủ yếu là thay lốp/vỏ xe. Ngược lại = "bdsc"
-- loaiChiPhi = "congViec" nếu là công lao động, "vatTu" nếu là phụ tùng/vật tư, "giaCongNgoai" nếu là gia công ngoài
-- mucDich = "baoDuongDinhKy" nếu là hạng mục bảo dưỡng định kỳ (thay nhớt, lọc nhớt, lọc gió, bơm mỡ...), ngược lại = "suaChua"
-- tongTien = tổng tiền SAU giảm giá nếu có
-- km: chỉ lấy số, bỏ dấu chấm phẩy (300.190 → 300190)
-- Nếu không đọc được field nào thì để "" hoặc 0`
+  const promptLop = `Đây là phiếu thay lốp xe / báo giá lốp xe Việt Nam.
+Trả về JSON sau (KHÔNG markdown, KHÔNG giải thích, CHỈ JSON thuần):
+{"bienSo":"","km":0,"ngay":"","garage":"","soRO":"","tongTien":0,"loaiBaoGia":"lop","lopDaThay":[{"viTri":"","size":"","thuongHieu":"","soLuong":1,"donGia":0,"thanhTien":0}]}
+
+Quy tắc:
+- size: kích thước lốp vd 900R20-18PR, 11.00R20, 750-16
+- thuongHieu: Maxxis / Bridgestone / DRC / ...
+- viTri: vị trí lốp nếu có, để trống nếu không rõ
+- km: không dấu chấm`
+
+  const chosenPrompt = loai === 'lop' ? promptLop : promptBdsc
+  const isPdf    = (mimeType || '').includes('pdf')
+  const imgBlock = isPdf
+    ? { type:'document', source:{ type:'base64', media_type:'application/pdf', data:base64 } }
+    : { type:'image',    source:{ type:'base64', media_type:mimeType||'image/jpeg', data:base64 } }
 
   try {
-    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
+    const { data } = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2048,
+        messages: [{ role:'user', content:[ imgBlock, { type:'text', text:chosenPrompt } ] }],
       },
-      body: JSON.stringify({
-        model: 'claude-opus-4-6',
-        max_tokens: 2000,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: base64 },
-            },
-            { type: 'text', text: prompt },
-          ],
-        }],
-      }),
-    })
+      {
+        headers: { 'x-api-key':KEY, 'anthropic-version':'2023-06-01', 'content-type':'application/json' },
+        timeout: 30000,
+      }
+    )
 
-    if (!apiRes.ok) {
-      const err = await apiRes.text()
-      return res.status(500).json({ error: `Claude API error: ${err}` })
-    }
+    const raw = data.content?.[0]?.text || ''
 
-    const data = await apiRes.json()
-    const raw  = data.content?.[0]?.text || ''
-
-    // Parse JSON từ response
+    // Trích JSON — handle cả khi AI bọc trong ``` hay không
     let parsed = {}
-    try {
-      // Bỏ markdown fences nếu có
-      const clean = raw.replace(/```json|```/g, '').trim()
-      parsed = JSON.parse(clean)
-    } catch {
-      // Fallback: trả về text thô để frontend hiển thị
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (match) {
+      try { parsed = JSON.parse(match[0]) } catch { /* ignore */ }
+    }
+
+    // Parse thất bại → trả rỗng để nhập tay
+    if (!parsed.bienSo && !parsed.km) {
       return res.json({ bienSo:'', km:'', ngay:'', garage:'', soRO:'', tongTien:'',
-        loaiBaoGia:'bdsc', hangMuc:[], aiRead:true, rawText: raw })
+        loaiBaoGia:loai||'bdsc', hangMuc:[], lopDaThay:[], aiRead:true,
+        rawText: raw.slice(0,500) })
     }
 
-    // Detect anomaly nếu có biển số và km
+    // Detect anomaly cho BDSC
     let canhBaoPhieu = ''
-    if (parsed.bienSo && parsed.km) {
-      const bs = normBienSo(parsed.bienSo)
-      canhBaoPhieu = await detectAnomaly(bs, +parsed.km, +parsed.tongTien, parsed.hangMuc || [])
+    if (parsed.bienSo && parsed.km && parsed.loaiBaoGia !== 'lop') {
+      canhBaoPhieu = await detectAnomaly(normBienSo(parsed.bienSo), +parsed.km, +parsed.tongTien, parsed.hangMuc||[])
     }
 
-    res.json({ ...parsed, aiRead: true, canhBaoPhieu })
+    res.json({ ...parsed, aiRead:true, canhBaoPhieu })
+  } catch (e) {
+    const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message
+    res.status(500).json({ error: `Claude API: ${msg}` })
+  }
+})
+
+// ── POST /api/bdsc/tire-record — Lưu phiếu thay lốp vào MongoDB ─────────
+router.post('/tire-record', async (req, res) => {
+  try {
+    const { bienSo, km, ngay, garage, soRO, tongTien, size, viTriLop, thuongHieu, lopDaThay } = req.body
+    if (!bienSo) return res.status(400).json({ error: 'Thiếu bienSo' })
+
+    const bs = normBienSo(bienSo)
+
+    // 1. Lưu vào collection bdsc (loại lop)
+    const bdDoc = new BDSC({
+      bienSo: bs, ngay: ngay ? new Date(ngay.split('/').reverse().join('-')) : new Date(),
+      kmThoiDiem: +km || 0,
+      gara: garage || '', tongTien: +tongTien || 0,
+      loaiBdsc: 'suaChuaPhatSinh',
+      ghiChu: `Thay lốp ${size||''} ${thuongHieu||''} — vị trí: ${(viTriLop||[]).join(', ')}`,
+      hangMuc: [{
+        ten: `Thay lốp ${size||''}`,
+        loai: 'vatTu', donGia: +tongTien||0, soLuong: 1,
+        thanhTien: +tongTien||0,
+      }],
+      loaiBaoGia: 'lop',
+      nguoiTao: req.user?.username || '',
+    })
+    await bdDoc.save()
+
+    // 2. Cập nhật lop_xe — upsert từng vị trí được chọn
+    if ((viTriLop||[]).length > 0) {
+      const existing = await LopXe.findOne({ bienSo: bs }) || { bienSo: bs, cauHinh:'6', viTriLop:[] }
+      const updatedViTri = [...(existing.viTriLop||[])]
+      for (const vt of viTriLop) {
+        const idx = updatedViTri.findIndex(v => v.viTri === vt)
+        const newEntry = { viTri:vt, loaiLop:size||'', boBo:(size||'').includes('R')?'kem':'nylon',
+          thuongHieu:thuongHieu||'', kmLap:+km||0, ngayLap:new Date() }
+        if (idx >= 0) updatedViTri[idx] = newEntry
+        else updatedViTri.push(newEntry)
+      }
+      await LopXe.findOneAndUpdate(
+        { bienSo: bs },
+        { bienSo:bs, viTriLop:updatedViTri, updatedAt:new Date() },
+        { upsert:true, new:true }
+      )
+    }
+
+    res.json({ ok:true, bdscId: bdDoc._id })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
