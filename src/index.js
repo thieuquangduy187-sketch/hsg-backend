@@ -33,24 +33,27 @@ const adminUsersRoutes = require('./routes/adminUsers')
 const app  = express()
 const PORT = process.env.PORT || 3000
 
-// ── [M2] Security headers ─────────────────────────────────────────────────────
-app.use(helmet())
-
-// ── [C4] CORS whitelist ───────────────────────────────────────────────────────
+// ── [C4] CORS whitelist — phải đặt TRƯỚC helmet ─────────────────────────────
 const ALLOWED_ORIGINS = [
   'https://quanlyxehsh.com',
   'https://www.quanlyxehsh.com',
+  process.env.FRONTEND_URL,          // thêm bất kỳ URL nào qua env
+  process.env.FRONTEND_URL_2,        // URL phụ nếu cần (Netlify preview, v.v.)
   process.env.NODE_ENV === 'development' && 'http://localhost:5173',
   process.env.NODE_ENV === 'development' && 'http://localhost:3000',
 ].filter(Boolean)
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (mobile apps, curl, Render health check)
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
     cb(new Error('Not allowed by CORS'))
   },
   credentials: true
+}))
+
+// ── [M2] Security headers — đặt SAU cors() ───────────────────────────────────
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },  // cho phép cross-origin requests
 }))
 
 app.use(express.json({ limit: '50mb' }))
