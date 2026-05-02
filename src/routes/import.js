@@ -7,26 +7,20 @@ function cleanNum(val) {
   return parseFloat(String(val).replace(/[^0-9.]/g, '')) || 0
 }
 
-// Lấy document đầu tiên để map field
+// [H6] Chặn NoSQL injection: loại bỏ keys bắt đầu bằng $ hoặc chứa dấu .
 function mapRow(row) {
-  const get = (...keys) => {
-    for (const key of keys) {
-      if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key]
-      const found = Object.keys(row).find(k =>
-        k.trim().toLowerCase() === key.trim().toLowerCase()
-      )
-      if (found && row[found] !== undefined && row[found] !== null && row[found] !== '')
-        return row[found]
-    }
-    return ''
-  }
-  // Map tất cả keys từ row, không filter
   const mapped = {}
-  Object.keys(row).forEach(k => { mapped[k] = row[k] })
+  for (const k of Object.keys(row)) {
+    if (k.startsWith('$') || k.includes('.')) continue
+    const val = row[k]
+    // Không cho phép nested objects (NoSQL injection vector)
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) continue
+    mapped[k] = val
+  }
   return mapped
 }
 
-// ── GET /api/import/collections — danh sách collections hiện có ───────────────
+// ── GET /api/import/collections ───────────────────────────────────────────────
 router.get('/collections', async (req, res) => {
   try {
     const db = mongoose.connection.db
@@ -38,22 +32,24 @@ router.get('/collections', async (req, res) => {
   }
 })
 
-// ── POST /api/import/xe — import vào collection chỉ định ─────────────────────
-// Body: { rows: [...], collection: "xetai", mode: "upsert"|"replace"|"append" }
+// ── POST /api/import/xe ───────────────────────────────────────────────────────
 router.post('/xe', async (req, res) => {
   try {
     const {
       rows,
       collection: colName = 'xetai',
-      mode = 'upsert',        // upsert | replace | append
-      keyField = 'Mã TS kế toán'  // field dùng để xác định trùng
+      mode = 'upsert',
+      keyField = 'Mã TS kế toán'
     } = req.body
 
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'Không có dữ liệu để import.' })
     }
+    // [H6] Giới hạn số rows
+    if (rows.length > 5000) {
+      return res.status(400).json({ error: 'Quá nhiều dòng. Tối đa 5000 dòng/lần import.' })
+    }
 
-    // Validate collection name
     const safeCol = colName.replace(/[^a-zA-Z0-9_\-àáâãèéêìíòóôõùúăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/gi, '')
     if (!safeCol) return res.status(400).json({ error: 'Tên collection không hợp lệ.' })
 
@@ -62,7 +58,6 @@ router.post('/xe', async (req, res) => {
 
     const results = { added: 0, updated: 0, skipped: 0, errors: [], collection: safeCol }
 
-    // Mode: replace — xóa hết rồi import lại
     if (mode === 'replace') {
       await col.deleteMany({})
       const docs = rows.map(r => mapRow(r)).filter(r => Object.keys(r).length > 0)
@@ -75,7 +70,6 @@ router.post('/xe', async (req, res) => {
       })
     }
 
-    // Mode: append — thêm mới tất cả không kiểm tra trùng
     if (mode === 'append') {
       const docs = rows.map(r => mapRow(r)).filter(r => Object.keys(r).length > 0)
       if (docs.length > 0) await col.insertMany(docs)
@@ -87,7 +81,7 @@ router.post('/xe', async (req, res) => {
       })
     }
 
-    // Mode: upsert — dùng MongoDB updateOne + upsert:true
+    // Mode: upsert
     for (const rawRow of rows) {
       try {
         const mapped = mapRow(rawRow)
@@ -98,22 +92,16 @@ router.post('/xe', async (req, res) => {
           continue
         }
 
-        // Thử match cả string lẫn number
         const numVal = parseFloat(String(keyVal).replace(/[^0-9.]/g, ''))
         const filter = isNaN(numVal)
           ? { [keyField]: keyVal }
           : { [keyField]: { $in: [keyVal, numVal, String(numVal), String(Math.round(numVal))] } }
 
-        // Dùng upsert:true — MongoDB tự xử lý insert hoặc update
-        const res2 = await col.updateOne(
-          filter,
-          { $set: mapped },
-          { upsert: true }
-        )
+        const res2 = await col.updateOne(filter, { $set: mapped }, { upsert: true })
 
         if (res2.upsertedCount > 0) results.added++
         else if (res2.modifiedCount > 0) results.updated++
-        else results.skipped++ // matched nhưng không thay đổi gì
+        else results.skipped++
 
       } catch(rowErr) {
         results.errors.push({
