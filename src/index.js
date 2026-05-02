@@ -1,6 +1,16 @@
 require('dotenv').config()
+
+// ── [A5] Validate required env vars trước khi làm gì khác ────────────────────
+const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET', 'CRON_SECRET']
+const missing = REQUIRED_ENV.filter(k => !process.env[k])
+if (missing.length) {
+  console.error('FATAL: Missing required env vars:', missing.join(', '))
+  process.exit(1)
+}
+
 const express  = require('express')
 const cors     = require('cors')
+const helmet   = require('helmet')
 const mongoose = require('mongoose')
 
 const authRoutes  = require('./routes/auth')
@@ -23,8 +33,26 @@ const adminUsersRoutes = require('./routes/adminUsers')
 const app  = express()
 const PORT = process.env.PORT || 3000
 
-// CORS — allow all origins
-app.use(cors({ origin: (o, cb) => cb(null, true), credentials: true }))
+// ── [M2] Security headers ─────────────────────────────────────────────────────
+app.use(helmet())
+
+// ── [C4] CORS whitelist ───────────────────────────────────────────────────────
+const ALLOWED_ORIGINS = [
+  'https://quanlyxehsh.com',
+  'https://www.quanlyxehsh.com',
+  process.env.NODE_ENV === 'development' && 'http://localhost:5173',
+  process.env.NODE_ENV === 'development' && 'http://localhost:3000',
+].filter(Boolean)
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (mobile apps, curl, Render health check)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+    cb(new Error('Not allowed by CORS'))
+  },
+  credentials: true
+}))
+
 app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb', extended: true }))
 
@@ -33,11 +61,15 @@ app.get('/', (req, res) => res.json({ status: 'ok', message: 'HSG Fleet API v2' 
 app.use('/api/auth', authRoutes)
 
 // Internal cron routes — dùng CRON_SECRET thay vì JWT
-app.post('/internal/gps/auto-login', async (req, res) => {
+const CRON_SECRET = process.env.CRON_SECRET
+
+function verifyCronSecret(req) {
   const secret = req.headers['x-cron-secret'] || req.query.secret
-  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
+  return secret === CRON_SECRET
+}
+
+app.post('/internal/gps/auto-login', async (req, res) => {
+  if (!verifyCronSecret(req)) return res.status(403).json({ error: 'Forbidden' })
   try {
     const { binahLogin, saveToken } = require('./binahDownloader')
     const token = await binahLogin()
@@ -47,8 +79,7 @@ app.post('/internal/gps/auto-login', async (req, res) => {
 })
 
 app.post('/internal/gps/sync', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret
-  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) return res.status(403).json({ error: 'Forbidden' })
+  if (!verifyCronSecret(req)) return res.status(403).json({ error: 'Forbidden' })
   try {
     const { syncGPS } = require('./routes/gpsSync')
     const result = await syncGPS()
@@ -57,18 +88,13 @@ app.post('/internal/gps/sync', async (req, res) => {
 })
 
 app.post('/internal/gps/upload-camera-excel', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret
-  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) return res.status(403).json({ error: 'Forbidden' })
-  // Forward sang route xử lý
+  if (!verifyCronSecret(req)) return res.status(403).json({ error: 'Forbidden' })
   req.url = '/upload-camera-excel'
   gpsSyncRoutes(req, res)
 })
 
 app.post('/internal/gps/sync-camera', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret
-  if (secret !== (process.env.CRON_SECRET || 'hsg-cron-2026')) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
+  if (!verifyCronSecret(req)) return res.status(403).json({ error: 'Forbidden' })
   try {
     const { syncCameraStatus } = require('./binahDownloader')
     const result = await syncCameraStatus()
@@ -91,24 +117,6 @@ app.use('/api/cua-hang', protect, cuaHangRoutes)
 app.use('/api/hieu-qua', protect, hieuQuaRoutes)
 app.use('/api/admin', adminUsersRoutes)
 
-// Temporary debug route - no auth needed
-app.get('/debug/xe/:bienSo', async (req, res) => {
-  try {
-    const mongoose = require('mongoose')
-    const doc = await mongoose.connection.db.collection('xetai')
-      .findOne({ $or: [
-        { 'BIỂN SỐ': req.params.bienSo },
-        { 'BIẼNSỐ': req.params.bienSo },
-      ]})
-    if (!doc) return res.json({ error: 'Not found', tried: req.params.bienSo })
-    const fields = {}
-    Object.entries(doc).forEach(([k,v]) => {
-      if (k !== '_id') fields[k] = typeof v === 'string' ? v.substring(0,80) : v
-    })
-    res.json({ fieldCount: Object.keys(fields).length, fields })
-  } catch(e) { res.status(500).json({ error: e.message }) }
-})
-
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 
@@ -121,6 +129,18 @@ app.use((err, req, res, next) => {
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✓ MongoDB connected')
+
+    // ── [H7] MongoDB indexes ──────────────────────────────────────────────────
+    const db = mongoose.connection.db
+    Promise.all([
+      db.collection('ntxt').createIndex({ bienSo: 1 }),
+      db.collection('ntxt').createIndex({ thang: 1, nam: 1 }),
+      db.collection('ntxt').createIndex({ maHienTai: 1, thang: 1, nam: 1 }),
+      db.collection('xetai').createIndex({ 'BIỂN SỐ': 1 }),
+      db.collection('xetai').createIndex({ 'Mã TS kế toán': 1 }),
+      db.collection('users').createIndex({ lastActive: 1 }),
+    ]).catch(e => console.warn('[Indexes]', e.message))
+
     app.listen(PORT, () => {
       console.log(`✓ Server on port ${PORT}`)
       startGpsCron()
