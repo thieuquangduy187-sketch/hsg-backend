@@ -5,7 +5,8 @@ const jwt    = require('jsonwebtoken')
 const crypto = require('crypto')
 const User   = require('../models/User')
 
-const JWT_SECRET  = process.env.JWT_SECRET || 'hsg-fleet-secret-change-in-production'
+// [C2] Không dùng fallback — JWT_SECRET phải set trong env (validated ở index.js)
+const JWT_SECRET  = process.env.JWT_SECRET
 const JWT_EXPIRES = '30d'
 
 // ── Helpers ───────────────────────────────────────────────
@@ -54,7 +55,7 @@ async function protect(req, res, next) {
       return res.status(403).json({ error: `Tài khoản tạm thời bị khóa.${reason}${until}` })
     }
 
-    // Check session revocation (only for non-admin or if session tracking enabled)
+    // Check session revocation
     const tokenHash = hashToken(token)
     const session = user.sessions.find(s => s.tokenHash === tokenHash)
     if (session && !session.isActive) {
@@ -69,7 +70,6 @@ async function protect(req, res, next) {
       $set: { lastActive: now },
       $inc: { totalVisits: 1 }
     }
-    // Update session lastSeen if found
     if (session) {
       User.updateOne(
         { _id: user._id, 'sessions.tokenHash': tokenHash },
