@@ -1,26 +1,8 @@
 // GET /api/diesel-price?thang=5&nam=2026
 // Tự động fetch giá dầu diesel từ giaxanghomnay.com và cache vào MongoDB
-const router   = require('express').Router()
-const mongoose = require('mongoose')
-
-// ── Cache schema ──────────────────────────────────────────────────────────────
-const priceSchema = new mongoose.Schema({
-  key:       { type: String, unique: true }, // "5/2026"
-  thang:     Number,
-  nam:       Number,
-  do001_v1:  Number,  // DO 0.001S-V Vùng 1
-  do001_v2:  Number,  // DO 0.001S-V Vùng 2
-  do05_v1:   Number,  // DO 0.05S-II Vùng 1
-  do05_v2:   Number,  // DO 0.05S-II Vùng 2
-  avg4:      Number,  // Bình quân 4 mức
-  minDo001:  Number,
-  maxDo001:  Number,
-  updatedAt: { type: Date, default: Date.now },
-  source:    String,
-}, { collection: 'diesel_prices' })
-
-const DieselPrice = mongoose.models.DieselPrice ||
-                    mongoose.model('DieselPrice', priceSchema)
+const router = require('express').Router()
+// [H2] Model tập trung
+const DieselPrice = require('../models/DieselPrice')
 
 // ── Fetch giá từ web ──────────────────────────────────────────────────────────
 async function fetchPriceFromWeb(thang, nam) {
