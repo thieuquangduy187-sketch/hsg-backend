@@ -8,9 +8,18 @@ const { binahLogin, syncCameraStatus, saveToken } = require('../binahDownloader'
 
 const db = () => mongoose.connection.db
 
+// [A4] Cache GPS token in memory — only hit DB on miss or after token renewal
+let _tokenCache = null
+
 async function getToken() {
+  if (_tokenCache) return _tokenCache
   const cfg = await db().collection('gps_config').findOne({ key: 'binhanh_token' })
-  return cfg?.value || null
+  _tokenCache = cfg?.value || null
+  return _tokenCache
+}
+
+function clearTokenCache() {
+  _tokenCache = null
 }
 
 async function binahCall(path, body, token) {
@@ -408,11 +417,7 @@ router.get('/vehicle-history/:plateRaw', async (req, res) => {
     res.json({ plateRaw, data })
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
-// ── Debug routes ───────────────────────────────────────────
-router.get('/debug-raw', async (req, res) => {
-  try {
-    const token=await getToken()
-    if (!token) return res.status(400).json({ error:'Chưa có token' })
+
     const data=await binahCall('/vehicleonline/list',{filterCondition:5,hasPermissionAsAdmin:false,skipVehiclePlateChanged:false,languageId:1},token)
     const vehicles=Array.isArray(data)?data:(data?.data||data?.vehicles||[])
     res.json({ total:vehicles.length, sample:vehicles.slice(0,2).map(v=>({ plate:v.vehiclePlate||v.plate, allKeys:Object.keys(v) })) })
