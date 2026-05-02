@@ -418,11 +418,6 @@ router.get('/vehicle-history/:plateRaw', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
-    const data=await binahCall('/vehicleonline/list',{filterCondition:5,hasPermissionAsAdmin:false,skipVehiclePlateChanged:false,languageId:1},token)
-    const vehicles=Array.isArray(data)?data:(data?.data||data?.vehicles||[])
-    res.json({ total:vehicles.length, sample:vehicles.slice(0,2).map(v=>({ plate:v.vehiclePlate||v.plate, allKeys:Object.keys(v) })) })
-  } catch(e) { res.status(500).json({ error:e.message }) }
-})
 
 router.get('/backfill-status', async (req, res) => {
   try {
