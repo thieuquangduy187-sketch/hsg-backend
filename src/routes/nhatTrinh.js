@@ -1,33 +1,10 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 📁 BACKEND — hsg-backend/src/routes/nhatTrinh.js
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const router    = require('express').Router()
-const mongoose  = require('mongoose')
-const Xe        = require('../models/Xe')
+const router      = require('express').Router()
+const Xe          = require('../models/Xe')
+const NhatTrinh   = require('../models/NhatTrinh')  // [H2] Model tập trung
 const { protect } = require('../middleware/auth')
-
-// ── Inline NhatTrinh model ────────────────────────────────────────────────────
-const ntSchema = new mongoose.Schema({
-  bienSo: String, maHienTai: { type: String, required: true },
-  thang:  { type: Number, required: true },
-  nam:    { type: Number, required: true },
-  submittedBy: String, submittedAt: { type: Date, default: Date.now },
-  kmDauThang: Number, kmCuoiThang: Number, tongKmDiChuyen: Number,
-  kmDuongDeo: { type: Number, default: 0 },
-  tgSuDungCau: { type: Number, default: 0 },
-  tongLitDau:  { type: Number, default: 0 },
-  tongTienDau: { type: Number, default: 0 },
-  tongKLChuyen:{ type: Number, default: 0 },
-  klNoiBo:     { type: Number, default: 0 },
-  soChuyenXe:  { type: Number, default: 0 },
-  cpThueNgoai: { type: Number, default: 0 },
-  klThueNgoai: { type: Number, default: 0 },
-  ghiChu:     { type: String, default: '' },
-  updatedAt:  { type: Date },
-  updatedBy:  { type: String },
-}, { collection: 'ntxt' })
-ntSchema.index({ bienSo: 1, thang: 1, nam: 1 }, { unique: true })
-const NhatTrinh = mongoose.models.NhatTrinh || mongoose.model('NhatTrinh', ntSchema)
 
 // ── POST /api/nhat-trinh ──────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
