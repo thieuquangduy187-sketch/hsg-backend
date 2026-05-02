@@ -143,20 +143,62 @@ router.get('/history/:bienSo', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const body = req.body
-    if (!body.bienSo || !body.ngay || !body.kmThoiDiem)
-      return res.status(400).json({ error: 'Thiếu bienSo, ngay, hoặc kmThoiDiem' })
+    if (!body.bienSo || !body.kmThoiDiem)
+      return res.status(400).json({ error: 'Thiếu bienSo hoặc kmThoiDiem' })
+
+    // ── Parse ngày — nhận cả "27/04/2026", "2026-04-27", ISO string ──────
+    let ngayParsed = null
+    if (body.ngay) {
+      const s = String(body.ngay).trim()
+      if (s.includes('/')) {
+        // dd/mm/yyyy
+        const [d, m, y] = s.split('/')
+        ngayParsed = new Date(`${y}-${m?.padStart(2,'0')}-${d?.padStart(2,'0')}`)
+      } else {
+        ngayParsed = new Date(s)
+      }
+    }
+    if (!ngayParsed || isNaN(ngayParsed)) ngayParsed = new Date()
+
+    // ── Remap hangMuc — OCR trả loaiChiPhi/mucDich, model cần loai ────────
+    const hangMucMapped = (body.hangMuc || []).map(h => ({
+      ten:       h.ten || '(không tên)',
+      loai:      h.loai || (h.loaiChiPhi === 'vatTu' ? 'vatTu'
+                          : h.loaiChiPhi === 'giaCongNgoai' ? 'giaCong' : 'suaChua'),
+      donGia:    +h.donGia   || 0,
+      soLuong:   +h.soLuong  || 1,
+      donVi:     h.donVi     || 'lần',
+      thanhTien: +h.thanhTien || 0,
+    }))
+
+    const tongTien = +body.tongTien || hangMucMapped.reduce((s, h) => s + h.thanhTien, 0)
 
     const canhBao = await detectAnomaly(
-      normBienSo(body.bienSo),
-      body.kmThoiDiem,
-      body.tongTien,
-      body.hangMuc || []
+      normBienSo(body.bienSo), +body.kmThoiDiem, tongTien, hangMucMapped
     )
-    const doc = new BDSC({ ...body, bienSo: normBienSo(body.bienSo), canhBao,
-      nguoiTao: req.user?.username || '' })
+
+    const doc = new BDSC({
+      bienSo:     normBienSo(body.bienSo),
+      loaiXe:     body.loaiXe     || 'xeTai',
+      ngay:       ngayParsed,
+      kmThoiDiem: +body.kmThoiDiem,
+      gara:       body.gara       || body.garage || '',
+      tinhThanh:  body.tinhThanh  || '',
+      hangMuc:    hangMucMapped,
+      tongCong:   +body.tongCong  || 0,
+      tongVatTu:  +body.tongVatTu || 0,
+      tongTien,
+      ghiChu:     body.ghiChu     || body.soRO ? `Số RO: ${body.soRO}` : '',
+      loaiBdsc:   body.loaiBdsc   || 'suaChuaPhatSinh',
+      anhBaoGia:  body.anhBaoGia  || [],
+      canhBao,
+      nguoiTao:   req.user?.username || '',
+    })
+
     await doc.save()
     res.status(201).json(doc)
   } catch (e) {
+    console.error('[BDSC POST] error:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
