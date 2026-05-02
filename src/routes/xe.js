@@ -84,25 +84,7 @@ router.get('/images', async (req, res) => {
   }
 })
 
-// GET /api/xe/raw — debug: xem 1 document thô
-router.get('/raw', async (req, res) => {
-  try {
-    const doc = await Xe.findOne({}).lean()
-    res.json(doc)
-  } catch(e) { res.status(500).json({ error: e.message }) }
-})
 
-// GET /api/xe/keys — debug: xem tên tất cả fields
-router.get('/keys', async (req, res) => {
-  try {
-    const doc = await Xe.findOne({}).lean()
-    const keys = Object.keys(doc).map(k => ({
-      repr: JSON.stringify(k),
-      val:  String(doc[k]).substring(0, 50)
-    }))
-    res.json(keys)
-  } catch(e) { res.status(500).json({ error: e.message }) }
-})
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ROUTE ĐỘNG — ĐẶT SAU TẤT CẢ ROUTES CỐ ĐỊNH
