@@ -54,13 +54,17 @@ app.use(cors({
 // ── [M2] Security headers — đặt SAU cors() ───────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  // Tắt COEP để cho phép load ảnh từ Google Drive (lh3.googleusercontent.com)
+  crossOriginEmbedderPolicy: false,
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      // Cho phép load ảnh từ Google Drive thumbnail và data URIs
       'img-src': ["'self'", 'data:', 'https://drive.google.com', 'https://lh3.googleusercontent.com'],
+      // Cho phép Referer khi load ảnh cross-origin
+      'referrer': ['no-referrer-when-downgrade'],
     },
   },
+  referrerPolicy: { policy: 'no-referrer-when-downgrade' },
 }))
 
 app.use(express.json({ limit: '50mb' }))
