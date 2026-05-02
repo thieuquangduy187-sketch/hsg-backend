@@ -1,10 +1,22 @@
 // Chỉ upsert admin users — KHÔNG xóa xe users
 // node src/seed.js
+// Yêu cầu: MONGODB_URI và ADMIN_PASSWORD trong env
 require('dotenv').config()
 const mongoose = require('mongoose')
 const User = require('./models/User')
 
 async function seed() {
+  if (!process.env.MONGODB_URI) {
+    console.error('FATAL: MONGODB_URI is required')
+    process.exit(1)
+  }
+  // [C2] Không hardcode password — phải set ADMIN_PASSWORD trong env
+  const adminPassword = process.env.ADMIN_PASSWORD
+  if (!adminPassword) {
+    console.error('FATAL: ADMIN_PASSWORD env var is required to run seed')
+    process.exit(1)
+  }
+
   await mongoose.connect(process.env.MONGODB_URI)
   console.log('Connected to MongoDB')
 
@@ -13,18 +25,17 @@ async function seed() {
 
   const adminUsers = [
     {
-      username: 'thieuquangduy',
-      password: 'duy2061997',
+      username:    'thieuquangduy',
+      password:    adminPassword,
       displayName: 'Thiều Quang Duy',
-      role: 'admin',
-      active: true,
+      role:        'admin',
+      active:      true,
     },
   ]
 
   for (const u of adminUsers) {
     const existing = await User.findOne({ username: u.username })
     if (existing) {
-      // Reset password + đảm bảo role đúng
       existing.password = u.password  // pre-save hook sẽ hash lại
       existing.role     = u.role
       existing.active   = true
