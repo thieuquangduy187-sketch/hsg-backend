@@ -13,8 +13,8 @@ async function binahLogin() {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      UserName:   process.env.BINHANH_USER     || 'hoasenhome',
-      Password:   process.env.BINHANH_PASSWORD || 'Binh12345678',
+      UserName:   process.env.BINHANH_USER,
+      Password:   process.env.BINHANH_PASSWORD,
       IPClient:   '115.78.6.177',
       AppType:    0,
       ClientType: 1,
