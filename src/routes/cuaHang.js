@@ -459,9 +459,4 @@ router.post('/fix-one', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
-
-    res.json({ dot, total: xeDot.length, sampleBS, results })
-  } catch(e) { res.status(500).json({ error: e.message }) }
-})
-
 module.exports = router
