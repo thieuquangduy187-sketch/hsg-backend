@@ -3,7 +3,8 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const BASE = process.env.BACKEND_URL || 'http://localhost:3000'
 
-const CRON_SECRET = process.env.CRON_SECRET || 'hsg-cron-2026'
+// [C2] Không fallback hardcode — CRON_SECRET validated ở index.js
+const CRON_SECRET = process.env.CRON_SECRET
 
 async function callAPI(path, method = 'POST') {
   try {
@@ -21,18 +22,15 @@ async function callAPI(path, method = 'POST') {
 }
 
 function startGpsCron() {
-  // Schedule: chạy mỗi phút, kiểm tra giờ
   setInterval(async () => {
     const now  = new Date()
     const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
 
-    // 05:55 — auto-login lấy token mới trước khi sync
     if (hhmm === '05:55') {
       console.log('[Cron] 05:55 — Auto-login Binhanh...')
       await callAPI('/internal/gps/auto-login')
     }
 
-    // 06:00 — sync GPS + camera
     if (hhmm === '06:00') {
       console.log('[Cron] 06:00 — Sync GPS...')
       await callAPI('/internal/gps/sync')
@@ -40,13 +38,11 @@ function startGpsCron() {
       await callAPI('/internal/gps/sync-camera')
     }
 
-    // 17:55 — auto-login lại
     if (hhmm === '17:55') {
       console.log('[Cron] 17:55 — Auto-login Binhanh...')
       await callAPI('/internal/gps/auto-login')
     }
 
-    // 18:00 — sync GPS + camera
     if (hhmm === '18:00') {
       console.log('[Cron] 18:00 — Sync GPS...')
       await callAPI('/internal/gps/sync')
