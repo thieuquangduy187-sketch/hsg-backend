@@ -38,6 +38,7 @@ const PORT = process.env.PORT || 3000
 const ALLOWED_ORIGINS = [
   'https://quanlyxehsh.com',
   'https://www.quanlyxehsh.com',
+  'https://gps3.binhanh.vn',
   process.env.FRONTEND_URL,          // thêm bất kỳ URL nào qua env
   process.env.FRONTEND_URL_2,        // URL phụ nếu cần (Netlify preview, v.v.)
   process.env.NODE_ENV === 'development' && 'http://localhost:5173',
