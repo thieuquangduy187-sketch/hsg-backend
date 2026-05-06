@@ -13,34 +13,35 @@ const cors     = require('cors')
 const helmet   = require('helmet')
 const mongoose = require('mongoose')
 
-const authRoutes  = require('./routes/auth')
-const xeRoutes    = require('./routes/xe')
-const otoRoutes   = require('./routes/oto')
-const statsRoutes = require('./routes/stats')
-const { protect } = require('./middleware/auth')
+const authRoutes         = require('./routes/auth')
+const xeRoutes           = require('./routes/xe')
+const otoRoutes          = require('./routes/oto')
+const statsRoutes        = require('./routes/stats')
+const { protect }        = require('./middleware/auth')
 const nhatTrinhRoutes    = require('./routes/nhatTrinh')
 const nhatTrinhNgayRoutes = require('./routes/nhatTrinhNgay')
-const giaDauRoutes      = require('./routes/giaDau')
-const xeHoatDongRoutes = require('./routes/xeHoatDong')
-const analyzeRoutes = require('./routes/analyze')
-const gpsSyncRoutes  = require('./routes/gpsSync')
-const cuaHangRoutes  = require('./routes/cuaHang')
-const { startGpsCron } = require('./gpsCron')
-const importRoutes = require('./routes/import')
-const hieuQuaRoutes = require('./routes/hieuqua')
-const adminUsersRoutes = require('./routes/adminUsers')
-const bdscRoutes       = require('./routes/bdsc')
+const giaDauRoutes       = require('./routes/giaDau')
+const xeHoatDongRoutes   = require('./routes/xeHoatDong')
+const analyzeRoutes      = require('./routes/analyze')
+const gpsSyncRoutes      = require('./routes/gpsSync')
+const cuaHangRoutes      = require('./routes/cuaHang')
+const { startGpsCron }   = require('./gpsCron')
+const importRoutes       = require('./routes/import')
+const hieuQuaRoutes      = require('./routes/hieuqua')
+const adminUsersRoutes   = require('./routes/adminUsers')
+const bdscRoutes         = require('./routes/bdsc')
+const dangKiemRoutes     = require('./routes/dangKiem')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
 
-// ── [C4] CORS whitelist — phải đặt TRƯỚC helmet ─────────────────────────────
+// ── [C4] CORS whitelist — phải đặt TRƯỚC helmet ──────────────────────────────
 const ALLOWED_ORIGINS = [
   'https://quanlyxehsh.com',
   'https://www.quanlyxehsh.com',
   'https://gps3.binhanh.vn',
-  process.env.FRONTEND_URL,          // thêm bất kỳ URL nào qua env
-  process.env.FRONTEND_URL_2,        // URL phụ nếu cần (Netlify preview, v.v.)
+  process.env.FRONTEND_URL,   // thêm bất kỳ URL nào qua env
+  process.env.FRONTEND_URL_2, // URL phụ nếu cần (Netlify preview, v.v.)
   process.env.NODE_ENV === 'development' && 'http://localhost:5173',
   process.env.NODE_ENV === 'development' && 'http://localhost:3000',
 ].filter(Boolean)
@@ -62,7 +63,6 @@ app.use(helmet({
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       'img-src': ["'self'", 'data:', 'https://drive.google.com', 'https://lh3.googleusercontent.com'],
-      // Cho phép Referer khi load ảnh cross-origin
       'referrer': ['no-referrer-when-downgrade'],
     },
   },
@@ -72,11 +72,11 @@ app.use(helmet({
 app.use(express.json({ limit: '50mb' }))
 app.use(express.urlencoded({ limit: '50mb', extended: true }))
 
-// Public routes
+// ── Public routes ─────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ status: 'ok', message: 'HSG Fleet API v2' }))
 app.use('/api/auth', authRoutes)
 
-// Internal cron routes — dùng CRON_SECRET thay vì JWT
+// ── Internal cron routes — dùng CRON_SECRET thay vì JWT ──────────────────────
 const CRON_SECRET = process.env.CRON_SECRET
 
 function verifyCronSecret(req) {
@@ -118,23 +118,24 @@ app.post('/internal/gps/sync-camera', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }) }
 })
 
-// Protected routes — cần JWT
-app.use('/api/xe',    protect, xeRoutes)
-app.use('/api/oto',   protect, otoRoutes)
-app.use('/api/stats', protect, statsRoutes)
+// ── Protected routes — cần JWT ────────────────────────────────────────────────
+app.use('/api/xe',               protect, xeRoutes)
+app.use('/api/oto',              protect, otoRoutes)
+app.use('/api/stats',            protect, statsRoutes)
 app.use('/api/nhat-trinh',       protect, nhatTrinhRoutes)
 app.use('/api/nhat-trinh-ngay',  protect, nhatTrinhNgayRoutes)
-app.use('/api/xe-hoat-dong', protect, xeHoatDongRoutes)
-app.use('/api/gia-dau', protect, giaDauRoutes)
-app.use('/api/import', protect, importRoutes)
-app.use('/api/analyze', protect, analyzeRoutes)
-app.use('/api/gps', protect, gpsSyncRoutes)
-app.use('/api/cua-hang', protect, cuaHangRoutes)
-app.use('/api/hieu-qua', protect, hieuQuaRoutes)
-app.use('/api/admin', adminUsersRoutes)
-app.use('/api/bdsc',  protect, bdscRoutes)
+app.use('/api/xe-hoat-dong',     protect, xeHoatDongRoutes)
+app.use('/api/gia-dau',          protect, giaDauRoutes)
+app.use('/api/import',           protect, importRoutes)
+app.use('/api/analyze',          protect, analyzeRoutes)
+app.use('/api/gps',              protect, gpsSyncRoutes)
+app.use('/api/cua-hang',         protect, cuaHangRoutes)
+app.use('/api/hieu-qua',         protect, hieuQuaRoutes)
+app.use('/api/admin',            adminUsersRoutes)
+app.use('/api/bdsc',             protect, bdscRoutes)
+app.use('/api/dang-kiem',        protect, dangKiemRoutes)
 
-// Health check
+// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
@@ -143,6 +144,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message })
 })
 
+// ── MongoDB connect & start ───────────────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✓ MongoDB connected')
@@ -156,6 +158,7 @@ mongoose.connect(process.env.MONGODB_URI)
       db.collection('xetai').createIndex({ 'BIỂN SỐ': 1 }),
       db.collection('xetai').createIndex({ 'Mã TS kế toán': 1 }),
       db.collection('users').createIndex({ lastActive: 1 }),
+      db.collection('dang_kiem').createIndex({ bienSo: 1 }),
     ]).catch(e => console.warn('[Indexes]', e.message))
 
     app.listen(PORT, () => {
@@ -164,5 +167,3 @@ mongoose.connect(process.env.MONGODB_URI)
     })
   })
   .catch(err => { console.error('✗ DB failed:', err.message); process.exit(1) })
-const dangKiemRoutes = require('./routes/dangKiem')
-app.use('/api/dang-kiem', protect, dangKiemRoutes)
