@@ -1,210 +1,244 @@
 #!/usr/bin/env node
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 📁 BACKEND — hsg-backend/src/scripts/importDangKiem.js
-// Script import 1 lần: parse HTML → push lên API
+// Parse HTML theo span ID — chính xác, không bị lệch field
 //
 // Cách dùng:
-//   1. node src/scripts/importDangKiem.js /path/to/XE\ TAI/LUU\ TRU
-//   2. Hoặc đặt HTML_DIR trong .env rồi chạy: node src/scripts/importDangKiem.js
+//   JWT_TOKEN=<token> API_URL=https://hsg-backend.onrender.com \
+//   node src/scripts/importDangKiem.js "/path/to/XE TAI/LUU TRU"
 //
-// Yêu cầu:
-//   - Backend đang chạy (hoặc dùng MONGODB_URI trực tiếp)
-//   - API_URL=https://hsg-backend.onrender.com  (hoặc http://localhost:3000)
-//   - JWT_TOKEN=<token admin>   (lấy từ login)
+// Debug 1 file:
+//   node src/scripts/importDangKiem.js file.html --debug
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 require('dotenv').config()
-const fs   = require('fs')
-const path = require('path')
+const fs    = require('fs')
+const path  = require('path')
 const https = require('https')
 const http  = require('http')
 
-const HTML_DIR  = process.argv[2] || process.env.HTML_DIR || './html_files'
+const HTML_DIR  = process.argv[2] || process.env.HTML_DIR  || './html_files'
 const API_URL   = process.env.API_URL   || 'http://localhost:3000'
 const JWT_TOKEN = process.env.JWT_TOKEN || ''
-const BATCH     = 20   // records per API call
+const BATCH     = 20
 
-// ── HTML Parser ───────────────────────────────────────────
-function parseHtml(html) {
-  // Extract table rows as [label, value] pairs
-  const rows = []
-  const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
-  const tdRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi
-  let trMatch
-  while ((trMatch = trRegex.exec(html)) !== null) {
+// ── Chuẩn hoá biển số: "61H-205.30V" → "61H20530" ────────
+function normBienSo(raw) {
+  return (raw || '')
+    .toUpperCase()
+    .replace(/THÔNG TIN PHƯƠNG TIỆN BIỂN ĐĂNG KÝ[:：]?\s*/i, '')
+    .replace(/[-.\s]/g, '')
+    .replace(/V$/, '')
+    .trim()
+}
+
+// ── Parse nội dung 1 span theo id ─────────────────────────
+function spanById(html, id) {
+  const re = new RegExp(
+    `<span[^>]+\\bid=["']${id}["'][^>]*>([\\s\\S]*?)<\\/span>`,
+    'i'
+  )
+  const m = html.match(re)
+  if (!m) return ''
+  return m[1]
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// ── Parse bảng lịch sử kiểm định ─────────────────────────
+function parseLichSuKD(html) {
+  const tableRe = /<table[^>]+id=["']DGKiemDinh["'][^>]*>([\s\S]*?)<\/table>/i
+  const tableM  = html.match(tableRe)
+  if (!tableM) return []
+
+  const rows   = []
+  const rowRe  = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
+  let rowM
+  let first = true
+  while ((rowM = rowRe.exec(tableM[1])) !== null) {
+    if (first) { first = false; continue }
     const cells = []
-    let tdMatch
-    const tdRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi
-    while ((tdMatch = tdRe.exec(trMatch[1])) !== null) {
-      const raw = tdMatch[1].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
-      cells.push(raw)
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi
+    let cellM
+    while ((cellM = cellRe.exec(rowM[1])) !== null) {
+      cells.push(
+        cellM[1]
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      )
     }
-    if (cells.some(c => c)) rows.push(cells)
+    if (cells.length >= 5 && /\d{2}\/\d{2}\/\d{4}/.test(cells[2])) {
+      rows.push({
+        tramKD:    cells[0] || '',
+        soPhieu:   cells[1] || '',
+        ngayKD:    cells[2] || '',
+        lanKD:     cells[3] || '',
+        soTem:     cells[4] || '',
+        thoiHanKD: cells[5] || '',
+      })
+    }
   }
   return rows
 }
 
-function extract(rows, ...labels) {
-  for (const label of labels) {
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      for (let j = 0; j < row.length - 1; j++) {
-        const cell = row[j].toLowerCase().replace(/[:]/g, '').trim()
-        if (labels.map(l => l.toLowerCase()).some(l => cell.includes(l))) {
-          // Try next cell in same row
-          const val = row[j + 1]?.trim()
-          if (val) return val
-          // Try next row
-          const nextVal = rows[i + 1]?.[0]?.trim()
-          if (nextVal && !nextVal.includes(':')) return nextVal
-        }
-      }
-    }
-  }
-  return ''
+// ── Tìm lần KĐ gần hôm nay nhất ──────────────────────────
+function findRecentKD(lichSu) {
+  if (!lichSu?.length) return null
+  const today = Date.now()
+  return lichSu
+    .map(l => {
+      const [d, m, y] = (l.ngayKD || '').split('/')
+      const ts = (d && m && y) ? new Date(`${y}-${m}-${d}`).getTime() : NaN
+      return { ...l, _delta: isNaN(ts) ? Infinity : Math.abs(ts - today) }
+    })
+    .sort((a, b) => a._delta - b._delta)[0] || null
 }
 
-function parseFile(htmlPath) {
-  const html   = fs.readFileSync(htmlPath, 'utf8')
-  const rows   = parseHtml(html)
-  const bienSo = path.basename(htmlPath, '.html').replace(/_/g, '')
+// ── Parse toàn bộ 1 file HTML ─────────────────────────────
+function parseFile(filePath) {
+  const html = fs.readFileSync(filePath, 'utf8')
 
-  // Lịch sử kiểm định (bảng cuối: Trạm KĐ | Số phiếu | Ngày KĐ | Lần KĐ | Số tem | Thời hạn)
-  const lichSuKD = []
-  let inKDTable  = false
-  for (const row of rows) {
-    if (row.some(c => c.includes('Trạm KĐ') || c.includes('Số phiếu'))) {
-      inKDTable = true; continue
-    }
-    if (inKDTable && row.length >= 5 && row[0] && row[2]) {
-      // row[0]=TramKD, row[1]=SoPhieu, row[2]=NgayKD, row[3]=LanKD, row[4]=SoTem, row[5]=ThoiHan
-      const thoiHan = row[5] || row[4] || ''
-      // Only include rows that look like real data (date format dd/mm/yyyy)
-      if (/\d{2}\/\d{2}\/\d{4}/.test(row[2])) {
-        lichSuKD.push({ tramKD: row[0], soPhieu: row[1] || '', ngayKD: row[2], lanKD: row[3] || '', soTem: row[4] || '', thoiHanKD: thoiHan })
-      }
-    }
-  }
+  const rawBS  = spanById(html, 'LblBinDangKy') || path.basename(filePath, '.html')
+  const bienSo = normBienSo(rawBS)
 
-  // Tìm lần KĐ gần hôm nay nhất
-  const today = new Date()
-  const recentKD = lichSuKD
-    .map(l => { const p = l.ngayKD.split('/'); return { ...l, _d: new Date(`${p[2]}-${p[1]}-${p[0]}`) } })
-    .filter(l => !isNaN(l._d))
-    .sort((a, b) => Math.abs(a._d - today) - Math.abs(b._d - today))[0]
-
-  const g = (...labels) => extract(rows, ...labels)
+  const lichSuKD = parseLichSuKD(html)
+  const recentKD = findRecentKD(lichSuKD)
 
   return {
     bienSo,
-    ngayDangKy:        g('Ngày đăng ký'),
-    soSoKiemDinh:      g('Số sổ kiểm định'),
-    soSoQuanLy:        g('Số sổ quản lý'),
-    chuPhuongTien:     g('Chủ phương tiện'),
-    diaChiChu:         g('Địa chỉ chủ phương tiện', 'Địa chỉ'),
-    loaiPhuongTien:    g('Loại phương tiện'),
-    nhanHieu:          g('Nhãn hiệu'),
-    soLoai:            g('Số loại'),
-    soMay:             g('Số máy thực tế', 'Số máy'),
-    soKhung:           g('Số khung thực tế', 'Số khung'),
-    namSanXuat:        g('Năm sản xuất'),
-    noiSanXuat:        g('Nơi sản xuất'),
-    taiTrongThietKe:   g('Tải trọng thiết kế'),
-    trongLuongBanThan: g('Trọng lượng bản thân'),
-    soNguoi:           g('Số người cho phép chở'),
-    taiTrongKeo:       g('Tải trọng kéo theo TK'),
-    kichThuocBao:      g('Kích thước bao'),
-    kichThuocThung:    g('Kích thước thùng hàng', 'Kích thước thùng'),
-    chieuDaiCoSo:      g('Chiều dài cơ sở'),
-    kieuDC:            g('Kiểu ĐC', 'Loại động cơ'),
-    nhienLieu:         g('Nhiên liệu'),
-    dungTich:          g('Dung tích'),
-    congSuat:          g('Công suất lớn nhất', 'Công suất'),
-    congThucBanhXe:    g('Công thức bánh xe'),
-    vetBanhXe:         g('Vết bánh xe'),
-    soLop:             g('Số lốp'),
-    coLop:             g('Cỡ lốp'),
-    kinhDoanhVanTai:   g('Kinh doanh vận tải'),
-    lapGSHT:           g('Lắp thiết bị GSHT', 'GSHT'),
-    ngayNopPhi:        g('Ngày nộp phí'),
-    donViThuPhi:       g('Đơn vị thu phí'),
-    soBienLai:         g('Số biên lai'),
-    phiDenHetNgay:     g('Phí nộp đến hết ngày'),
+    ngayDangKy:        spanById(html, 'txtNgayDK'),
+    ngayDangKyLanDau:  spanById(html, 'txtNgayDKLD'),
+    soSoKiemDinh:      spanById(html, 'txtSoSoKD'),
+    soSoQuanLy:        spanById(html, 'txtSoSoQL'),
+    chuPhuongTien:     spanById(html, 'txtChuPT'),
+    diaChiChu:         spanById(html, 'txtDiaChi'),
+    loaiPhuongTien:    spanById(html, 'txtLoaiPT'),
+    nhanHieu:          spanById(html, 'txtNhanHieu'),
+    soLoai:            spanById(html, 'txtSoLoai'),
+    soMay:             spanById(html, 'txtSoMay'),
+    soKhung:           spanById(html, 'txtSoKhung'),
+    namSanXuat:        spanById(html, 'txtNamSX'),
+    noiSanXuat:        spanById(html, 'txtNoiSanXuat'),
+    taiTrongThietKe:   spanById(html, 'txtTaiTrong'),
+    trongLuongBanThan: spanById(html, 'txtTrongLuong'),
+    soNguoi:           spanById(html, 'txtSoCho'),
+    taiTrongKeo:       spanById(html, 'txtTaiTrongKeo'),
+    thayDoiKetCau:     spanById(html, 'lblCaiTao'),
+    chuyenDoiCongNang: spanById(html, 'lblChuyenDoi'),
+    kinhDoanhVanTai:   spanById(html, 'lblKDVT'),
+    lapGSHT:           spanById(html, 'lblGSHT'),
+    congThucBanhXe:    spanById(html, 'txtCTBanhXe'),
+    vetBanhXe:         spanById(html, 'txtVetBanhXe'),
+    kichThuocBao:      spanById(html, 'txtKichThuocBao'),
+    kichThuocThung:    spanById(html, 'txtKichThuocThung'),
+    chieuDaiCoSo:      spanById(html, 'txtChieuDaiCoSo'),
+    kieuDC:            spanById(html, 'txtKieuDongCo'),
+    kyHieu:            spanById(html, 'txtKyHieu'),
+    nhienLieu:         spanById(html, 'txtNhienLieu'),
+    dungTich:          spanById(html, 'txtDungTich'),
+    congSuat:          spanById(html, 'txtNemax'),
+    phanhChinh:        spanById(html, 'txtPhanhChinh'),
+    phanhDo:           spanById(html, 'txtPhanhDo'),
+    soLop:             spanById(html, 'txtSoLop'),
+    coLop:             spanById(html, 'txtCoLop'),
+    ngayNopPhi:        spanById(html, 'txtNgayNop'),
+    donViThuPhi:       spanById(html, 'txtDonVi'),
+    soBienLai:         spanById(html, 'txtBL_ID'),
+    phiDenHetNgay:     spanById(html, 'txtDenNgay'),
     thoiHanKDHienTai:  recentKD?.thoiHanKD || '',
     ngayKDGanNhat:     recentKD?.ngayKD     || '',
     lichSuKD,
   }
 }
 
-// ── API call ──────────────────────────────────────────────
+// ── Gửi batch lên API ─────────────────────────────────────
 function apiPost(records) {
   return new Promise((resolve, reject) => {
     const body    = JSON.stringify({ records })
-    const url     = new URL(API_URL + '/api/dang-kiem/import')
+    const url     = new URL(`${API_URL}/api/dang-kiem/import`)
     const isHttps = url.protocol === 'https:'
     const options = {
-      hostname: url.hostname, port: url.port || (isHttps ? 443 : 80),
-      path: url.pathname, method: 'POST',
+      hostname: url.hostname,
+      port:     url.port || (isHttps ? 443 : 80),
+      path:     url.pathname,
+      method:   'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type':   'application/json',
         'Content-Length': Buffer.byteLength(body),
-        'Authorization': `Bearer ${JWT_TOKEN}`,
+        Authorization:    `Bearer ${JWT_TOKEN}`,
       },
     }
     const lib = isHttps ? https : http
     const req = lib.request(options, r => {
       let data = ''
-      r.on('data', c => data += c)
-      r.on('end', () => {
-        try { resolve(JSON.parse(data)) } catch { resolve(data) }
-      })
+      r.on('data', c => { data += c })
+      r.on('end', () => { try { resolve(JSON.parse(data)) } catch { resolve({ raw: data }) } })
     })
     req.on('error', reject)
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')) })
     req.write(body)
     req.end()
   })
 }
 
+// ── Debug 1 file ──────────────────────────────────────────
+function debugOne(filePath) {
+  const rec = parseFile(filePath)
+  console.log(`\n=== DEBUG: ${path.basename(filePath)} ===`)
+  Object.entries(rec).forEach(([k, v]) => {
+    if (k === 'lichSuKD') {
+      console.log('lichSuKD:')
+      ;(v || []).forEach((l, i) => console.log(`  [${i}]`, JSON.stringify(l)))
+    } else {
+      console.log(`  ${k.padEnd(22)}: ${(typeof v === 'string' ? v || '(trống)' : v)}`)
+    }
+  })
+}
+
 // ── Main ──────────────────────────────────────────────────
 async function main() {
+  // Debug mode: node importDangKiem.js file.html --debug
+  if (process.argv[3] === '--debug') {
+    debugOne(HTML_DIR); return
+  }
+
   if (!fs.existsSync(HTML_DIR)) {
-    console.error(`❌ Không tìm thấy thư mục: ${HTML_DIR}`)
-    console.error('   Dùng: node src/scripts/importDangKiem.js /path/to/html_folder')
+    console.error(`❌ Không tìm thấy: ${HTML_DIR}`)
     process.exit(1)
   }
 
   const files = fs.readdirSync(HTML_DIR)
-    .filter(f => f.endsWith('.html') && !f.startsWith('._') && !f.startsWith('Thông tin'))
+    .filter(f => f.toLowerCase().endsWith('.html') && !f.startsWith('._'))
 
-  console.log(`📂 Tìm thấy ${files.length} file HTML trong ${HTML_DIR}`)
-  if (!JWT_TOKEN) console.warn('⚠  JWT_TOKEN trống — nếu API yêu cầu auth sẽ bị 401')
+  console.log(`📂 ${files.length} file HTML`)
+  if (!JWT_TOKEN) console.warn('⚠  JWT_TOKEN trống')
 
-  const records = []
-  let errors = 0
+  const records = [], errors = []
   for (const f of files) {
     try {
-      const rec = parseFile(path.join(HTML_DIR, f))
-      records.push(rec)
+      records.push(parseFile(path.join(HTML_DIR, f)))
       process.stdout.write(`\r  ✓ Parsed ${records.length}/${files.length}`)
-    } catch (e) {
-      errors++
-      console.error(`\n  ✗ ${f}: ${e.message}`)
-    }
+    } catch (e) { errors.push(`${f}: ${e.message}`) }
   }
-  console.log(`\n  Parse xong: ${records.length} xe, ${errors} lỗi`)
+  console.log(`\n  Parse: ${records.length} OK, ${errors.length} lỗi`)
+  errors.forEach(e => console.warn('  ✗', e))
 
-  // Batch push
-  let total = 0
+  let totalSaved = 0
   for (let i = 0; i < records.length; i += BATCH) {
     const batch = records.slice(i, i + BATCH)
     try {
       const res = await apiPost(batch)
-      total += res.total || batch.length
-      process.stdout.write(`\r  ↑ Uploaded ${Math.min(i + BATCH, records.length)}/${records.length}`)
-    } catch (e) {
-      console.error(`\n  ✗ Batch ${i}–${i+BATCH}: ${e.message}`)
-    }
+      if (res.error) console.error(`\n  ✗ Batch ${i}: ${res.error}`)
+      else { totalSaved += res.total || batch.length; process.stdout.write(`\r  ↑ Uploaded ${Math.min(i+BATCH, records.length)}/${records.length}`) }
+    } catch (e) { console.error(`\n  ✗ Batch ${i}: ${e.message}`) }
   }
-  console.log(`\n✅ Import xong: ${total} records vào collection dang_kiem`)
+  console.log(`\n✅ Xong: ${totalSaved} records → dang_kiem`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })
