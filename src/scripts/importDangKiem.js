@@ -234,9 +234,24 @@ async function main() {
     const batch = records.slice(i, i + BATCH)
     try {
       const res = await apiPost(batch)
-      if (res.error) console.error(`\n  ✗ Batch ${i}: ${res.error}`)
-      else { totalSaved += res.total || batch.length; process.stdout.write(`\r  ↑ Uploaded ${Math.min(i+BATCH, records.length)}/${records.length}`) }
-    } catch (e) { console.error(`\n  ✗ Batch ${i}: ${e.message}`) }
+      if (res.error || res.raw) {
+        const msg = res.error || res.raw || 'unknown'
+        console.error(`\n  ✗ Batch ${i}-${i+BATCH}: ${String(msg).slice(0,200)}`)
+        if (i === 0) {
+          console.error('\n💡 Gợi ý nguyên nhân:')
+          console.error('   - Route /api/dang-kiem/import chưa deploy lên backend')
+          console.error('   - JWT_TOKEN hết hạn (đăng nhập lại, lấy token mới)')
+          console.error('   - Backend chưa có model DangKiem.js')
+          break
+        }
+      } else {
+        totalSaved += res.total || batch.length
+        process.stdout.write(`\r  ↑ Uploaded ${Math.min(i+BATCH, records.length)}/${records.length} (saved: ${totalSaved})`)
+      }
+    } catch (e) {
+      console.error(`\n  ✗ Batch ${i}-${i+BATCH}: ${e.message || String(e)}`)
+      if (i === 0) break
+    }
   }
   console.log(`\n✅ Xong: ${totalSaved} records → dang_kiem`)
 }
