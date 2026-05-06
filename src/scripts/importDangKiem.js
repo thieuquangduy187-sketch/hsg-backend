@@ -1,15 +1,4 @@
 #!/usr/bin/env node
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 📁 BACKEND — hsg-backend/src/scripts/importDangKiem.js
-// Parse HTML theo span ID — chính xác, không bị lệch field
-//
-// Cách dùng:
-//   JWT_TOKEN=<token> API_URL=https://hsg-backend.onrender.com \
-//   node src/scripts/importDangKiem.js "/path/to/XE TAI/LUU TRU"
-//
-// Debug 1 file:
-//   node src/scripts/importDangKiem.js file.html --debug
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 require('dotenv').config()
 const fs    = require('fs')
 const path  = require('path')
@@ -21,7 +10,6 @@ const API_URL   = process.env.API_URL   || 'http://localhost:3000'
 const JWT_TOKEN = process.env.JWT_TOKEN || ''
 const BATCH     = 20
 
-// ── Chuẩn hoá biển số: "61H-205.30V" → "61H20530" ────────
 function normBienSo(raw) {
   return (raw || '')
     .toUpperCase()
@@ -31,85 +19,45 @@ function normBienSo(raw) {
     .trim()
 }
 
-// ── Parse nội dung 1 span theo id ─────────────────────────
 function spanById(html, id) {
-  const re = new RegExp(
-    `<span[^>]+\\bid=["']${id}["'][^>]*>([\\s\\S]*?)<\\/span>`,
-    'i'
-  )
+  const re = new RegExp(`<span[^>]+\\bid=["']${id}["'][^>]*>([\\s\\S]*?)<\\/span>`, 'i')
   const m = html.match(re)
   if (!m) return ''
-  return m[1]
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
 }
 
-// ── Parse bảng lịch sử kiểm định ─────────────────────────
 function parseLichSuKD(html) {
-  const tableRe = /<table[^>]+id=["']DGKiemDinh["'][^>]*>([\s\S]*?)<\/table>/i
-  const tableM  = html.match(tableRe)
+  const tableM = html.match(/<table[^>]+id=["']DGKiemDinh["'][^>]*>([\s\S]*?)<\/table>/i)
   if (!tableM) return []
-
-  const rows   = []
-  const rowRe  = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
-  let rowM
-  let first = true
+  const rows = []; const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
+  let rowM; let first = true
   while ((rowM = rowRe.exec(tableM[1])) !== null) {
     if (first) { first = false; continue }
-    const cells = []
-    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi
-    let cellM
-    while ((cellM = cellRe.exec(rowM[1])) !== null) {
-      cells.push(
-        cellM[1]
-          .replace(/<[^>]+>/g, '')
-          .replace(/&nbsp;/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim()
-      )
-    }
-    if (cells.length >= 5 && /\d{2}\/\d{2}\/\d{4}/.test(cells[2])) {
-      rows.push({
-        tramKD:    cells[0] || '',
-        soPhieu:   cells[1] || '',
-        ngayKD:    cells[2] || '',
-        lanKD:     cells[3] || '',
-        soTem:     cells[4] || '',
-        thoiHanKD: cells[5] || '',
-      })
-    }
+    const cells = []; const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/gi; let cellM
+    while ((cellM = cellRe.exec(rowM[1])) !== null)
+      cells.push(cellM[1].replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim())
+    if (cells.length >= 5 && /\d{2}\/\d{2}\/\d{4}/.test(cells[2]))
+      rows.push({ tramKD:cells[0], soPhieu:cells[1], ngayKD:cells[2], lanKD:cells[3], soTem:cells[4], thoiHanKD:cells[5]||'' })
   }
   return rows
 }
 
-// ── Tìm lần KĐ gần hôm nay nhất ──────────────────────────
 function findRecentKD(lichSu) {
   if (!lichSu?.length) return null
   const today = Date.now()
-  return lichSu
-    .map(l => {
-      const [d, m, y] = (l.ngayKD || '').split('/')
-      const ts = (d && m && y) ? new Date(`${y}-${m}-${d}`).getTime() : NaN
-      return { ...l, _delta: isNaN(ts) ? Infinity : Math.abs(ts - today) }
-    })
-    .sort((a, b) => a._delta - b._delta)[0] || null
+  return lichSu.map(l => {
+    const [d,m,y] = (l.ngayKD||'').split('/')
+    return { ...l, _d: (d&&m&&y) ? Math.abs(new Date(`${y}-${m}-${d}`).getTime()-today) : Infinity }
+  }).sort((a,b)=>a._d-b._d)[0]
 }
 
-// ── Parse toàn bộ 1 file HTML ─────────────────────────────
 function parseFile(filePath) {
   const html = fs.readFileSync(filePath, 'utf8')
-
-  const rawBS  = spanById(html, 'LblBinDangKy') || path.basename(filePath, '.html')
+  const rawBS = spanById(html, 'LblBinDangKy') || path.basename(filePath, '.html')
   const bienSo = normBienSo(rawBS)
-
   const lichSuKD = parseLichSuKD(html)
   const recentKD = findRecentKD(lichSuKD)
-
   return {
     bienSo,
     ngayDangKy:        spanById(html, 'txtNgayDK'),
@@ -157,67 +105,80 @@ function parseFile(filePath) {
   }
 }
 
-// ── Gửi batch lên API ─────────────────────────────────────
-function apiPost(records) {
+// ── HTTP request helper — log cả status code ──────────────
+function httpRequest(url, method, body, token) {
   return new Promise((resolve, reject) => {
-    const body    = JSON.stringify({ records })
-    const url     = new URL(`${API_URL}/api/dang-kiem/import`)
-    const isHttps = url.protocol === 'https:'
-    const options = {
-      hostname: url.hostname,
-      port:     url.port || (isHttps ? 443 : 80),
-      path:     url.pathname,
-      method:   'POST',
+    const u       = new URL(url)
+    const isHttps = u.protocol === 'https:'
+    const payload = body ? JSON.stringify(body) : null
+    const opts = {
+      hostname: u.hostname,
+      port:     u.port || (isHttps ? 443 : 80),
+      path:     u.pathname + (u.search || ''),
+      method,
       headers: {
-        'Content-Type':   'application/json',
-        'Content-Length': Buffer.byteLength(body),
-        Authorization:    `Bearer ${JWT_TOKEN}`,
+        'Authorization': `Bearer ${token}`,
+        ...(payload ? {
+          'Content-Type':   'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        } : {}),
       },
     }
     const lib = isHttps ? https : http
-    const req = lib.request(options, r => {
+    const req = lib.request(opts, r => {
       let data = ''
       r.on('data', c => { data += c })
-      r.on('end', () => { try { resolve(JSON.parse(data)) } catch { resolve({ raw: data }) } })
+      r.on('end', () => {
+        let parsed
+        try { parsed = JSON.parse(data) } catch { parsed = { raw: data.slice(0, 300) } }
+        resolve({ status: r.statusCode, body: parsed })
+      })
     })
-    req.on('error', reject)
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('timeout')) })
-    req.write(body)
+    req.on('error', e => reject(e))
+    req.setTimeout(45000, () => { req.destroy(); reject(new Error('Request timeout after 45s')) })
+    if (payload) req.write(payload)
     req.end()
   })
 }
 
-// ── Debug 1 file ──────────────────────────────────────────
-function debugOne(filePath) {
-  const rec = parseFile(filePath)
-  console.log(`\n=== DEBUG: ${path.basename(filePath)} ===`)
-  Object.entries(rec).forEach(([k, v]) => {
-    if (k === 'lichSuKD') {
-      console.log('lichSuKD:')
-      ;(v || []).forEach((l, i) => console.log(`  [${i}]`, JSON.stringify(l)))
-    } else {
-      console.log(`  ${k.padEnd(22)}: ${(typeof v === 'string' ? v || '(trống)' : v)}`)
-    }
-  })
-}
-
-// ── Main ──────────────────────────────────────────────────
 async function main() {
-  // Debug mode: node importDangKiem.js file.html --debug
+  // Debug mode
   if (process.argv[3] === '--debug') {
-    debugOne(HTML_DIR); return
+    const rec = parseFile(HTML_DIR)
+    Object.entries(rec).forEach(([k,v]) => {
+      if (k==='lichSuKD') { console.log('lichSuKD:'); (v||[]).forEach((l,i)=>console.log(`  [${i}]`,JSON.stringify(l))) }
+      else console.log(`  ${k.padEnd(22)}: ${v||'(trống)'}`)
+    })
+    return
   }
 
   if (!fs.existsSync(HTML_DIR)) {
-    console.error(`❌ Không tìm thấy: ${HTML_DIR}`)
+    console.error(`❌ Không tìm thấy: ${HTML_DIR}`); process.exit(1)
+  }
+
+  // ── Bước 1: Test connection ──────────────────────────────
+  console.log(`🔗 Kiểm tra kết nối: ${API_URL}/api/dang-kiem`)
+  try {
+    const test = await httpRequest(`${API_URL}/api/dang-kiem`, 'GET', null, JWT_TOKEN)
+    if (test.status === 401) {
+      console.error('❌ Lỗi 401: JWT_TOKEN không hợp lệ hoặc đã hết hạn')
+      console.error('   → Đăng nhập lại, lấy token mới từ localStorage.getItem("hsg_token")')
+      process.exit(1)
+    }
+    if (test.status === 404) {
+      console.error('❌ Lỗi 404: Route /api/dang-kiem không tồn tại')
+      console.error('   → Kiểm tra backend đã deploy file index.js và dangKiem.js chưa')
+      process.exit(1)
+    }
+    console.log(`✅ Kết nối OK — status ${test.status}`)
+  } catch (e) {
+    console.error(`❌ Không kết nối được backend: ${e.message}`)
     process.exit(1)
   }
 
-  const files = fs.readdirSync(HTML_DIR)
-    .filter(f => f.toLowerCase().endsWith('.html') && !f.startsWith('._'))
-
+  // ── Bước 2: Parse HTML ───────────────────────────────────
+  const files = fs.readdirSync(HTML_DIR).filter(f => f.toLowerCase().endsWith('.html') && !f.startsWith('._'))
   console.log(`📂 ${files.length} file HTML`)
-  if (!JWT_TOKEN) console.warn('⚠  JWT_TOKEN trống')
 
   const records = [], errors = []
   for (const f of files) {
@@ -227,33 +188,34 @@ async function main() {
     } catch (e) { errors.push(`${f}: ${e.message}`) }
   }
   console.log(`\n  Parse: ${records.length} OK, ${errors.length} lỗi`)
-  errors.forEach(e => console.warn('  ✗', e))
+  if (errors.length) errors.forEach(e => console.warn('  ✗', e))
 
+  // ── Bước 3: Upload theo batch ────────────────────────────
   let totalSaved = 0
   for (let i = 0; i < records.length; i += BATCH) {
     const batch = records.slice(i, i + BATCH)
     try {
-      const res = await apiPost(batch)
-      if (res.error || res.raw) {
-        const msg = res.error || res.raw || 'unknown'
-        console.error(`\n  ✗ Batch ${i}-${i+BATCH}: ${String(msg).slice(0,200)}`)
+      const { status, body: res } = await httpRequest(
+        `${API_URL}/api/dang-kiem/import`, 'POST', { records: batch }, JWT_TOKEN
+      )
+      if (status !== 200 && status !== 201) {
+        console.error(`\n  ✗ Batch ${i}-${i+BATCH}: HTTP ${status} — ${JSON.stringify(res).slice(0,200)}`)
         if (i === 0) {
-          console.error('\n💡 Gợi ý nguyên nhân:')
-          console.error('   - Route /api/dang-kiem/import chưa deploy lên backend')
-          console.error('   - JWT_TOKEN hết hạn (đăng nhập lại, lấy token mới)')
-          console.error('   - Backend chưa có model DangKiem.js')
+          if (status === 401) console.error('   → Token hết hạn, đăng nhập lại')
+          if (status === 404) console.error('   → Route POST /api/dang-kiem/import chưa có trên backend')
+          if (status === 500) console.error('   → Lỗi server, xem Render Logs để biết chi tiết')
           break
         }
       } else {
         totalSaved += res.total || batch.length
-        process.stdout.write(`\r  ↑ Uploaded ${Math.min(i+BATCH, records.length)}/${records.length} (saved: ${totalSaved})`)
+        process.stdout.write(`\r  ↑ Uploaded ${Math.min(i+BATCH,records.length)}/${records.length} — saved: ${totalSaved}`)
       }
     } catch (e) {
-      console.error(`\n  ✗ Batch ${i}-${i+BATCH}: ${e.message || String(e)}`)
+      console.error(`\n  ✗ Batch ${i}-${i+BATCH}: ${e.message}`)
       if (i === 0) break
     }
   }
-  console.log(`\n✅ Xong: ${totalSaved} records → dang_kiem`)
+  console.log(`\n✅ Xong: ${totalSaved} records → collection dang_kiem`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })
