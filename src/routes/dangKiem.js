@@ -77,15 +77,33 @@ function alertPH(thoiHanStr) {
 // ── GET /api/dang-kiem/alerts — cảnh báo tất cả xe ───────
 router.get('/alerts', async (req, res) => {
   try {
+    const mongoose = require('mongoose')
+
+    // Lấy dữ liệu dang_kiem
     const docs = await DangKiem.find({})
       .select('bienSo nhanHieu thoiHanKDHienTai ngayKDGanNhat thoiHanPhuHieu ghiChuTreTre tienDoXuLy trangThaiXe')
       .sort({ bienSo: 1 }).lean()
 
-    const result = docs.map(d => {
-      const kd = alertKD(d.thoiHanKDHienTai)
-      const ph = alertPH(d.thoiHanPhuHieu)
-      return { ...d, alertKD: kd, alertPH: ph }
+    // Join với xetai để lấy cuaHang + tinhMoi
+    const xeList = await mongoose.connection.db.collection('xetai')
+      .find({}, { projection: { bienSo: 1, bienSoKhDau: 1, cuaHang: 1, tinhMoi: 1, tinhGop: 1, mien: 1 } })
+      .toArray()
+
+    // Map biển số chuẩn hoá → thông tin xetai
+    const xeMap = {}
+    xeList.forEach(x => {
+      const key = (x.bienSo || x.bienSoKhDau || '').toUpperCase().replace(/[-.\s]/g, '')
+      if (key) xeMap[key] = { cuaHang: x.cuaHang || '', tinhMoi: x.tinhMoi || '', tinhGop: x.tinhGop || '', mien: x.mien || '' }
     })
+
+    const result = docs.map(d => {
+      const key  = (d.bienSo || '').toUpperCase().replace(/[-.\s]/g, '')
+      const info = xeMap[key] || {}
+      const kd   = alertKD(d.thoiHanKDHienTai)
+      const ph   = alertPH(d.thoiHanPhuHieu)
+      return { ...d, ...info, alertKD: kd, alertPH: ph }
+    })
+
     res.json(result)
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
