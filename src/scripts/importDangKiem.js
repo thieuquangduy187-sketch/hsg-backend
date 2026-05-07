@@ -46,10 +46,21 @@ function parseLichSuKD(html) {
 function findRecentKD(lichSu) {
   if (!lichSu?.length) return null
   const today = Date.now()
-  return lichSu.map(l => {
-    const [d,m,y] = (l.ngayKD||'').split('/')
-    return { ...l, _d: (d&&m&&y) ? Math.abs(new Date(`${y}-${m}-${d}`).getTime()-today) : Infinity }
-  }).sort((a,b)=>a._d-b._d)[0]
+
+  const parsed = lichSu.map(l => {
+    const [d,m,y] = (l.thoiHanKD||'').split('/')
+    const ts = (d&&m&&y) ? new Date(`${y}-${m}-${d}`).getTime() : NaN
+    return { ...l, _ts: isNaN(ts) ? null : ts }
+  }).filter(l => l._ts !== null)
+
+  if (!parsed.length) return lichSu[0]
+
+  // Ưu tiên: hạn KĐ trong tương lai — lấy ngày gần today nhất (sắp hết hạn)
+  const future = parsed.filter(l => l._ts >= today).sort((a,b) => a._ts - b._ts)
+  if (future.length > 0) return future[0]
+
+  // Tất cả đã hết hạn: lấy hạn gần nhất trong quá khứ
+  return parsed.sort((a,b) => b._ts - a._ts)[0]
 }
 
 function parseFile(filePath) {
