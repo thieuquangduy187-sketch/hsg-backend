@@ -84,16 +84,27 @@ router.get('/alerts', async (req, res) => {
       .select('bienSo nhanHieu thoiHanKDHienTai ngayKDGanNhat thoiHanPhuHieu ghiChuTreTre tienDoXuLy trangThaiXe')
       .sort({ bienSo: 1 }).lean()
 
-    // Join với xetai để lấy cuaHang + tinhMoi
+    // Join với xetai — dùng tên cột gốc vì xetai lưu raw Excel field names
     const xeList = await mongoose.connection.db.collection('xetai')
-      .find({}, { projection: { bienSo: 1, bienSoKhDau: 1, cuaHang: 1, tinhMoi: 1, tinhGop: 1, mien: 1 } })
+      .find({}, { projection: {
+        'BIỂN SỐ': 1, 'BIẼNSỐ': 1,
+        'Cưả hàng sử dụng': 1, 'Cửa hàng sử dụng': 1,
+        'Tỉnh mới': 1, 'Tỉnh gộp': 1, 'Miền': 1,
+        bienSo: 1, cuaHang: 1, tinhMoi: 1   // fallback nếu đã mapped
+      } })
       .toArray()
 
     // Map biển số chuẩn hoá → thông tin xetai
     const xeMap = {}
     xeList.forEach(x => {
-      const key = (x.bienSo || x.bienSoKhDau || '').toUpperCase().replace(/[-.\s]/g, '')
-      if (key) xeMap[key] = { cuaHang: x.cuaHang || '', tinhMoi: x.tinhMoi || '', tinhGop: x.tinhGop || '', mien: x.mien || '' }
+      const bs  = x['BIỂN SỐ'] || x['BIẼNSỐ'] || x.bienSo || ''
+      const key = bs.toUpperCase().replace(/[-.\s]/g, '')
+      if (key) xeMap[key] = {
+        cuaHang: x['Cưả hàng sử dụng'] || x['Cửa hàng sử dụng'] || x.cuaHang || '',
+        tinhMoi: x['Tỉnh mới'] || x.tinhMoi || '',
+        tinhGop: x['Tỉnh gộp'] || x.tinhGop || '',
+        mien:    x['Miền']     || x.mien     || '',
+      }
     })
 
     const result = docs.map(d => {
